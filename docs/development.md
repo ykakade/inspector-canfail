@@ -37,8 +37,12 @@ The scanner also has a known false positive in the seed-repeatability test in `t
 
 Earlier runs found an actual bug: the method-swap lookup was a plain object. A call to `chunk.toString()` could find the inherited `Object.prototype.toString` function and insert it as replacement text. The lookup is now a `Map`, with a regression test. That is the sort of outcome these checks are for; a higher score alone is not the goal.
 
+## README language
+
+The README uses ASD-STE100 Issue 9. Refer to the [writing rules and software terms](writing.md) before you change its text.
+
 ## Artwork
 
-[`assets/hero.svg`](../assets/hero.svg) is the editable source for the README illustration. It uses plain SVG paths and system fonts, with no embedded images or external resources. [`assets/hero.png`](../assets/hero.png) is a raster export at twice the SVG dimensions for sharing.
+[`assets/reviewer.png`](../assets/reviewer.png) is the README illustration. The image uses a transparent background and opaque white areas inside the portrait.
 
-The red edit changes `>=` to `>`; the failing assertion is the shipping boundary in the checkout example. Keep that relationship intact when changing the artwork.
+The [generation prompts](../assets/reviewer.prompt.md) record the source of the image. The built-in image generation tool created the image. The character is original. Ponytail is the reference for the compact portrait format.
