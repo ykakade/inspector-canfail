@@ -1,6 +1,8 @@
 # README language
 
-The README uses the writing rules and dictionary in [ASD-STE100, Issue 9](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf).
+The README opening, before-and-after, results, and how-it-works sections may use the original Inspector character voice. Install, commands, FAQ, and other reference material use plain language.
+
+The reference material uses the writing rules and dictionary in [ASD-STE100, Issue 9](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf).
 
 ## Rules
 

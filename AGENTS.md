@@ -10,7 +10,7 @@ Write tests that protect behavior worth keeping. Before adding one, name the mis
 6. Investigate a failure before editing the test. Never copy unchecked output into the expected value.
 7. Never skip, delete, or weaken a failing test to get a green run. If the test is wrong, explain why.
 
-When writing or changing JavaScript/TypeScript tests, run `npx github:ykakade/canfail scan` from the project root, then `npx github:ykakade/canfail prove` on the relevant source with a non-watch test command. The checker also runs locally as `node skills/canfail/scripts/canfail.cjs` in this repo.
+When writing or changing JavaScript/TypeScript tests, run `npx github:ykakade/inspector-canfail scan` from the project root, then `npx github:ykakade/inspector-canfail prove` on the relevant source with a non-watch test command. The checker also runs locally as `node skills/canfail/scripts/canfail.cjs` in this repo.
 
 For each surviving mutation, inspect whether it changes supported behavior. Cover real gaps, preferably in an existing test. Explain harmless mutations; do not add useless assertions to reach a score. Scan findings are heuristics and need review too.
 

@@ -1,6 +1,6 @@
 # Using the checker
 
-The checker needs Node 18+. Examples below use `canfail` as shorthand for `npx github:ykakade/canfail` (or `node skills/canfail/scripts/canfail.cjs` inside this repo).
+The checker needs Node 18+. Examples below use `canfail` as shorthand for `npx github:ykakade/inspector-canfail` (or `node skills/canfail/scripts/canfail.cjs` inside this repo).
 
 ## Commands
 
@@ -59,7 +59,7 @@ The test command runs once on the original source. If that baseline fails, canfa
 
 The score is the percentage caught, including timeouts. It does not distinguish assertion failures from type errors, build failures, or unrelated failures. For runners such as ts-jest, type checking can reject a mutation before a test exercises it. Use a runtime-only test command when you want to measure assertions, and run type checks separately.
 
-A survivor is not automatically a request for a new test. Check whether the mutation can change supported behavior, and whether an existing case can cover it. Report harmless mutations with a reason. The [README](../README.md#limits) explains the limits of the score.
+A survivor is not automatically a request for a new test. Check whether the mutation can change supported behavior, and whether an existing case can cover it. Report harmless mutations with a reason. The [README](../README.md#faq) explains the limits of the score.
 
 | Exit code | Meaning |
 |---|---|
@@ -100,8 +100,8 @@ Use explicit source paths in CI. Automatic discovery sees uncommitted changes, n
 # Steps within a Node job, after actions/setup-node.
 - uses: actions/checkout@v4
 - run: npm ci
-- run: npx github:ykakade/canfail scan tests/
-- run: npx github:ykakade/canfail prove src/cart.ts --cmd "npm test" --bugs 20 --min-score 80
+- run: npx github:ykakade/inspector-canfail scan tests/
+- run: npx github:ykakade/inspector-canfail prove src/cart.ts --cmd "npm test" --bugs 20 --min-score 80
 ```
 
 Replace the example paths with yours. Pin the GitHub package reference to a reviewed commit for repeatable CI runs.

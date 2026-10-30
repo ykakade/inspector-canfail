@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "description": "Help AI coding agents write tests that catch real bugs. A testing skill and a JavaScript/TypeScript checker.",
   "author": { "name": "Yash Kakade", "url": "https://github.com/ykakade" },
-  "homepage": "https://github.com/ykakade/canfail",
-  "repository": "https://github.com/ykakade/canfail",
+  "homepage": "https://github.com/ykakade/inspector-canfail",
+  "repository": "https://github.com/ykakade/inspector-canfail",
   "license": "MIT",
   "keywords": ["testing", "mutation-testing", "fake-tests", "mocks", "vitest", "jest"]
 }

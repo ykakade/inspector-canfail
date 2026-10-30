@@ -25,7 +25,7 @@ The integration suite checks the demo: 47 passing tests catch none of the 10 sam
 
 ## Recorded self-check
 
-At commit [`0631a37`](https://github.com/ykakade/canfail/commit/0631a37), the recorded run caught **123 of 150 mutations (82%)**, with 90 tests running and the two demo runs skipped. Twenty-seven mutations survived, including lookup-table entries, `spyOn` paths, and journal setup. This is a historical result, not a live score for the current checkout.
+At commit [`0631a37`](https://github.com/ykakade/inspector-canfail/commit/0631a37), the recorded run caught **123 of 150 mutations (82%)**, with 90 tests running and the two demo runs skipped. Twenty-seven mutations survived, including lookup-table entries, `spyOn` paths, and journal setup. This is a historical result, not a live score for the current checkout.
 
 To repeat that sample:
 
@@ -39,10 +39,10 @@ Earlier runs found an actual bug: the method-swap lookup was a plain object. A c
 
 ## README language
 
-The README uses ASD-STE100 Issue 9. Refer to the [writing rules and software terms](writing.md) before you change its text.
+The README reference material uses ASD-STE100 Issue 9; its opening sections may use the Inspector character voice. Refer to the [writing rules and software terms](writing.md) before you change its text.
 
 ## Artwork
 
-[`assets/reviewer.png`](../assets/reviewer.png) is the README illustration. The image uses a transparent background and opaque white areas inside the portrait.
+[`assets/inspector.png`](../assets/inspector.png) is the README illustration. The image uses a transparent background and opaque white areas inside the portrait.
 
-The [generation prompts](../assets/reviewer.prompt.md) record the source of the image. The built-in image generation tool created the image. The character is original. Ponytail is the reference for the compact portrait format.
+The [generation prompts](../assets/inspector.prompt.md) record the source of the image. The built-in image generation tool created the image. The character is original. Ponytail is the reference for the compact portrait format.

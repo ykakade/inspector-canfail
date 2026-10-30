@@ -17,9 +17,9 @@
   "author": "Yash Kakade",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ykakade/canfail.git"
+    "url": "git+https://github.com/ykakade/inspector-canfail.git"
   },
-  "homepage": "https://github.com/ykakade/canfail#readme",
+  "homepage": "https://github.com/ykakade/inspector-canfail#readme",
   "type": "module",
   "bin": {
     "canfail": "skills/canfail/scripts/canfail.cjs"
