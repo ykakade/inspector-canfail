@@ -204,8 +204,9 @@ A tool that checks tests must pass its own check. So we pointed `canfail prove` 
 | 3 | 76 | **29 of 40** (73%) | No test for mocks assigned in `beforeEach`, CommonJS `require`, or assertions in a ternary. |
 | 4 | 83 | **28 of 40** (70%) | No test for `mock.module` (node:test, Bun), AVA's `t.is` and `t.snapshot`, or `import * as api` mocks. |
 | 5 | 86 | **crash** | canfail crashed while it planted bugs in its own source. See below. Before the crash, 7 bugs survived in the bug picker. |
+| **Now** | **90** | **123 of 150** (82%) | A fresh sample of 150 bugs, with a seed we never looked at while we fixed things. 27 still survive: untested names in lookup tables (`xtest`, `expect.poll`, `startsWith`), `spyOn` paths, and journal setup. They are the next round. |
 
-Each round plants *new* bugs. When the code changes, the same seed picks new spots, so no round can be passed by memory. Rounds 1 to 4 used seed 1 and round 5 used seed 2026.
+Each round plants *new* bugs. When the code changes, the same seed picks new spots, so no round can be passed by memory. Rounds 1 to 4 used seed 1 and round 5 used seed 2026. The last row uses seed 7. We show the honest number, not a perfect one. (The suite has 92 tests. canfail runs skip the 2 slow demo tests, so 90 run.)
 
 What we learned:
 
@@ -213,7 +214,7 @@ What we learned:
 - **16 parts of the code could never change a result.** canfail found them because no test could tell them apart from a bug. We deleted them. Less code, more checks.
 - **One real bug that no test had found.** The table of method swaps (`min`/`max`, `some`/`every`) was a plain object. So a call to `chunk.toString()` found `Object.prototype.toString`, and canfail planted a function as text and crashed. Any project that calls `.toString()` would have hit it. It is a `Map` now, with a test.
 
-Run it yourself: `npm run prove:self`.
+Run it yourself: `npm run prove:self` (40 bugs, about 3 minutes). For the last row: `npm run prove:self -- --bugs 150 --seed 7` (about 20 minutes).
 
 ## Use it in CI
 
