@@ -1,7 +1,7 @@
 {
   "name": "canfail",
   "version": "0.1.0",
-  "description": "Your agent says all tests pass. canfail checks if they can fail. A skill + CLI that catches fake tests.",
+  "description": "Help AI coding agents write tests that catch real bugs. A testing skill and a JavaScript/TypeScript checker.",
   "keywords": [
     "testing",
     "mutation-testing",

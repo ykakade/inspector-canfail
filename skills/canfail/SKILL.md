@@ -1,79 +1,67 @@
 ---
 name: canfail
 description: >
-  Stops fake tests: tests that mock the code they test, check their own mocks,
-  or cannot fail for any other reason. Use whenever you write, fix, change or
-  review tests, when a test fails and you are about to edit it, and before you
-  tell the user that tests pass. Also use when the user says "canfail", "fake
-  tests", "are these tests real", "mutation test", or "prove the tests work".
+  Helps coding agents avoid useless tests and check that useful tests catch bugs.
+  Use when writing, fixing, changing, or reviewing tests; when investigating a
+  failing test; or before reporting test results. Also use when the user asks
+  for canfail, fake-test checks, mutation testing, or proof that tests work.
 license: MIT
 ---
 
 # canfail
 
-A test that cannot fail proves nothing. "All tests pass" is not evidence until you have seen the tests catch a bug.
+Write tests that protect behavior worth keeping. A passing test is useful when a plausible mistake in the real code would make it fail.
 
-This skill has two parts: rules for writing tests, and a checker that proves the tests work. The checker is `scripts/canfail.cjs` in this skill's folder. It needs only Node 18+.
+This skill guides test choices. Its checker, `scripts/canfail.cjs`, scans JavaScript/TypeScript tests and mutates source to check for missed bugs. The checker needs Node 18+ and no runtime dependencies.
 
-## Rules for every test you write
+## Before adding a test
 
-1. **Run the real code.** Mock only what you cannot run in a test: the network, paid APIs, the clock, randomness, email, the file system. Never mock the module the test is about.
-2. **Assert on the result.** Check what the code returns or changes. Do not call a mock yourself and then check that mock.
-3. **Assert the exact value.** `toBe(37.4)`, not `toBeDefined()`, `toBeTruthy()` or `typeof x === "number"`. Work out the expected value by hand, from the requirement, not from the output.
-4. **Test the edges.** Add a test at each boundary: `>= 100` needs a test at exactly 100 and one just under it.
-5. **Await every async assertion.** `await expect(p).rejects.toThrow()`. Use `expect(() => f()).toThrow()`, not `try/catch` with an `expect` in the `catch`.
-6. **When a test fails, suspect the code first.** Read the failure. Never change an expected value to match output you did not check by hand.
-7. **Never skip, delete or weaken a failing test to get a green run.** If you think the test is wrong, tell the user why. Let the user decide.
+Read the code and the nearby tests. Name the behavior that matters and a mistake the test would catch. If a nearby case already protects it, use or extend that case. Trivial wiring, language features, and a mock's own behavior usually do not need new tests.
 
-## Prove it before you say "done"
+Choose tests for actual risk: a boundary, a calculation, a parser, a state change, a failure path, or a security decision. Avoid permutations that add no distinct protection. Do not turn a small change into a new test framework.
 
-Run from the project root. `<skill>` is the folder of this file.
+## Rules for tests you keep
+
+1. **Run the real implementation.** Fake external boundaries when needed: the network, payment gateway, email, clock, or randomness. Never replace the module under test with a mock.
+2. **Check behavior.** Assert on the result, state change, or a meaningful boundary call made by real code. Calling a mock yourself and asserting that call tests nothing about the implementation.
+3. **Derive expectations from the requirement.** For a calculation, check a specific value worked out independently. `toBeDefined()` does not check a total. Match assertion precision to the behavior; don't compare incidental details.
+4. **Check meaningful edges.** For `>= 100`, test exactly 100 and a value just below. Check relevant failure paths without duplicating every arrangement of the same behavior.
+5. **Let assertions finish and fail.** Await or return async assertions. Use `expect(() => f()).toThrow()` or `await expect(p).rejects.toThrow()`. Don't hide assertions in a catch block that may never run or swallow their errors.
+6. **Investigate red tests.** Read the failure and check the requirement before changing code or expectations. Never copy an unchecked result into the expected value.
+7. **Keep failures visible.** Never skip, delete, or weaken a failing test to make the run green. If the test is wrong, explain the mismatch to the user.
+
+## Check the tests
+
+Run from the project root. `<skill>` below is the directory containing this file.
 
 ```bash
-node <skill>/scripts/canfail.cjs                    # scan, then prove
-node <skill>/scripts/canfail.cjs scan tests/        # static check, about 1 second
-node <skill>/scripts/canfail.cjs prove src/cart.ts  # plant 10 bugs, run the tests 10 times
+node <skill>/scripts/canfail.cjs scan tests/
+node <skill>/scripts/canfail.cjs prove src/cart.ts --cmd "npm test"
 ```
 
-- **scan** reads the test files and flags 12 patterns of tests that cannot fail. It does not run anything.
-- **prove** plants one bug at a time in the source (flips `>=` to `>`, deletes a call, changes a constant), runs the test command, and counts the bugs the tests catch. It always puts the source back, also after Ctrl-C. If a run was killed with `kill -9`, run `canfail restore`.
+Use paths and a non-watch test command appropriate to the project. With no paths, `scan` prefers uncommitted tests, then all discovered tests. `prove` prefers uncommitted source reachable through relative imports from tests, then source directly imported by tests. Pass explicit paths when checking a committed branch or a project with import aliases.
 
-By default, prove targets the source files you changed (git) that the tests reach, and runs `npm test`. Set them yourself when you need to: `--files src/a.ts,src/b.ts --cmd "npx vitest run"`. Use `--json` to read the results as data.
+- **scan** flags 12 ineffective testing patterns without executing tests. Review errors and warnings in context. Run `rules` for suggestions or read [the examples](references/fake-tests.md). A clean scan does not establish that a test is useful.
+- **prove** changes one boundary, constant, operator, or call at a time, then runs the test command. The baseline must pass. It samples up to 10 mutations by default; use `--bugs all` for all available candidates. `--json` provides structured results.
 
-## The loop
+`prove` temporarily edits source. It journals the original text and restores it after each mutation, on completion, Ctrl-C, and SIGTERM. Do not edit those files or run another `prove` in the same checkout during the run. After a forced kill, run `restore` from the same project directory.
 
-1. Run `scan`. Fix every error. Read `canfail rules` for the fix of each rule.
-2. Run `prove`. For each `survived` bug, the report shows the line before and after.
-3. Write a test that fails with that bug and passes without it. Do not change the source to make the bug go away.
-4. Run `prove` again with the same `--seed`. Repeat until every bug is caught.
-5. If a surviving bug cannot change behavior (an equivalent mutant, such as `x >= 0` vs `x > 0` when `x` is never 0), do not write a test for it. Delete the dead code, or name the bug in your report and say why.
+## Review survivors
 
-## How to report
+For each mutation that survives, inspect the before/after line and ask whether it changes supported behavior.
 
-Report the numbers. Never write "all tests pass" alone.
+- If it reveals a real gap, add or extend a test that fails with the mutation and passes without it. Keep the production requirement unchanged.
+- If it cannot change supported behavior, explain why. Do not invent a test or change a requirement to make the score pass. A justified `// canfail-ignore` on the source line excludes it from future samples.
+- If the check cannot run, report the limitation. Do not claim it passed.
 
-> Tests: 19 pass. canfail scan: 0 errors. canfail prove: caught 10 of 10 planted bugs.
+Rerun after fixing real gaps. The same source and `--seed` reproduce a sample; changing source can change the sample. A high score is supporting evidence, not the objective.
 
-If you could not reach 10 of 10, say which bugs survived and why.
+A mutation counts as caught whenever the test command fails or times out. That includes type errors and unrelated failures. Check suspicious catches and use a stable runtime test command when measuring assertion quality.
 
-## Excuses and the facts
+## Report what you checked
 
-| Excuse | Fact |
-|---|---|
-| "Mocking the module keeps the test fast and isolated." | It replaces the code under test. The test now checks the mock. Mock its dependencies instead. |
-| "The test fails, so the expected value must be wrong." | Maybe. Maybe the code is wrong. Work out the value by hand before you change anything. |
-| "`toHaveBeenCalled()` proves the code works." | Only if real code made the call. If the test made the call, it proves nothing. |
-| "I'll skip this one test for now." | A skipped test still shows a green run. The user reads green as "it works." |
-| "The code is too hard to test without mocking everything." | Mock the boundary (the gateway, the clock), call the real function, and assert its output. If that is still hard, tell the user. |
-| "Coverage is 100%, so the tests are good." | Coverage counts the lines that ran. It does not count the lines that were checked. `prove` does. |
+Include the test command and result, scan errors and warnings, mutations caught and survived, and any limits. For example:
 
-## Red flags: stop and read this skill again
+> Tests: 19 passed. Scan: 0 errors, 0 warnings. Prove: 10 of 10 sampled mutations caught. Only the checkout module was checked.
 
-- You wrote `vi.mock` or `jest.mock` with the path of the file you are testing.
-- Your test calls a `vi.fn()` and then asserts on that same `vi.fn()`.
-- You are about to change an expected value because a test failed.
-- You typed `.skip`, `xit`, or deleted a test while the suite was red.
-- Every assertion in a test is `toBeDefined()`, `toBeTruthy()` or `not.toThrow()`.
-- You are about to write "all tests pass" and you did not run `prove`.
-
-More bad and good examples, one per rule: [references/fake-tests.md](references/fake-tests.md).
+If mutations survived, say which behavior is unprotected or why a mutation is harmless. If you reused existing tests or added none, say what already covers the change. Don't add tests just to have something to report.

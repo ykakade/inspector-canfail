@@ -1,6 +1,6 @@
-# Fake tests: one example per rule
+# Ineffective tests: examples and fixes
 
-Each rule below has a test that passes but cannot fail, and the fix. `canfail scan` finds all twelve. `canfail rules` prints the short form.
+These are the twelve patterns checked by `canfail scan`. Some assertions never run; others run but check too little. Findings are heuristics: review the intended behavior before changing a test. `canfail rules` prints the short form.
 
 The examples test this function:
 
@@ -8,7 +8,7 @@ The examples test this function:
 export function total(items: { price: number; qty: number }[], coupon?: string): number
 ```
 
-## Errors: the test cannot fail
+## Errors: checks that can miss broken code
 
 ### mocks-subject
 
@@ -130,7 +130,7 @@ it("loads the cart", () => {
 
 Fix: `await expect(loadCart(1)).resolves.toEqual({ id: 1 });`
 
-## Warnings: the test can fail, but barely
+## Warnings: checks that need context
 
 ### skipped-test
 
@@ -138,7 +138,7 @@ Fix: `await expect(loadCart(1)).resolves.toEqual({ id: 1 });`
 it.skip("gives half off from $100", () => { /* ... */ });
 ```
 
-A skipped test does not run, and the run is still green. Fix the test, or delete it and tell the user why.
+A skipped test provides no protection in this run. Investigate why it was skipped. Do not silently skip or delete a failing test to make the suite green; explain the issue.
 
 ### weak-assertion
 
@@ -148,7 +148,7 @@ expect(typeof total(items)).toBe("number");
 expect(total(items)).not.toBeNull();
 ```
 
-These pass for almost any value, also for a wrong one. Fix: `expect(total(items)).toBe(30);`
+These accept many wrong totals. For a calculation, check the expected amount: `expect(total(items)).toBe(30);` An existence or type check can be useful when that is the actual contract; the scanner cannot decide that for you.
 
 ### conditional-assertion
 
