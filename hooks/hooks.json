@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/canfail/scripts/canfail.cjs\" hook",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

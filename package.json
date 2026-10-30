@@ -1,0 +1,50 @@
+{
+  "name": "canfail",
+  "version": "0.1.0",
+  "description": "Your agent says all tests pass. canfail checks if they can fail. A skill + CLI that catches fake tests.",
+  "keywords": [
+    "testing",
+    "mutation-testing",
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "agent-skills",
+    "vitest",
+    "jest",
+    "fake-tests"
+  ],
+  "license": "MIT",
+  "author": "Yash Kakade",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ykakade/canfail.git"
+  },
+  "homepage": "https://github.com/ykakade/canfail#readme",
+  "type": "module",
+  "bin": {
+    "canfail": "skills/canfail/scripts/canfail.cjs"
+  },
+  "files": [
+    "skills",
+    "hooks",
+    ".claude-plugin",
+    "AGENTS.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "esbuild src/cli.ts --bundle --platform=node --format=cjs --target=node18 --minify --legal-comments=none --outfile=skills/canfail/scripts/canfail.cjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check:bundle": "npm run build && git diff --exit-code skills/canfail/scripts/canfail.cjs",
+    "demo": "node scripts/demo.mjs",
+    "prove:self": "node skills/canfail/scripts/canfail.cjs prove src/scan.ts src/mutate.ts src/prove.ts --bugs 40 --cmd 'npx vitest run'"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  }
+}

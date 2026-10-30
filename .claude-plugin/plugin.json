@@ -1,0 +1,10 @@
+{
+  "name": "canfail",
+  "version": "0.1.0",
+  "description": "Stops fake tests. A skill with testing rules, a checker that plants bugs to prove the tests can fail, and a hook that flags fake tests as the agent writes them.",
+  "author": { "name": "Yash Kakade", "url": "https://github.com/ykakade" },
+  "homepage": "https://github.com/ykakade/canfail",
+  "repository": "https://github.com/ykakade/canfail",
+  "license": "MIT",
+  "keywords": ["testing", "mutation-testing", "fake-tests", "mocks", "vitest", "jest"]
+}

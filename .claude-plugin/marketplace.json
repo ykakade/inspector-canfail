@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "canfail",
+  "description": "Stops AI agents from writing tests that can't fail.",
+  "owner": { "name": "Yash Kakade", "url": "https://github.com/ykakade" },
+  "plugins": [
+    {
+      "name": "canfail",
+      "description": "Testing rules, a bug-planting checker, and a hook that flags fake tests as they are written.",
+      "source": "./",
+      "category": "testing"
+    }
+  ]
+}

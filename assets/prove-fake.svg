@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="804" height="809" viewBox="0 0 804 809" role="img" aria-label="canfail prove: the agent-style suite">
+  <rect x="0.5" y="0.5" width="803" height="808" rx="10" fill="#0d1117" stroke="#30363d"/>
+  <circle cx="20" cy="18" r="6" fill="#ff5f57"/><circle cx="40" cy="18" r="6" fill="#febc2e"/><circle cx="60" cy="18" r="6" fill="#28c840"/>
+  <text x="402" y="22" text-anchor="middle" fill="#8b949e" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12">canfail prove: the agent-style suite</text>
+  <line x1="0" y1="34" x2="804" y2="34" stroke="#21262d"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" fill="#c9d1d9">
+  <text x="22" y="60" xml:space="preserve"><tspan fill="#3fb950" font-weight="700">$ </tspan><tspan font-weight="700">npx canfail prove src/checkout.ts --cmd "npx vitest run tests/before"</tspan></text>
+  <text x="22" y="79" xml:space="preserve"></text>
+  <text x="22" y="98" xml:space="preserve"><tspan font-weight="700">canfail prove</tspan>  <tspan fill-opacity="0.55">plant 10 bugs in src/checkout.ts · run `npx vitest run tests/before`</tspan></text>
+  <text x="22" y="117" xml:space="preserve"></text>
+  <text x="22" y="136" xml:space="preserve">  <tspan fill="#3fb950">✓</tspan> <tspan fill-opacity="0.55">baseline</tspan>   47 tests pass <tspan fill-opacity="0.55">in 0.4s, with no bug planted</tspan></text>
+  <text x="22" y="155" xml:space="preserve"></text>
+  <text x="22" y="174" xml:space="preserve">  <tspan fill="#ff7b72">✗</tspan> <tspan fill="#ff7b72" font-weight="700">survived</tspan>   src/checkout.ts:24  <tspan fill-opacity="0.55">number</tspan></text>
+  <text x="22" y="193" xml:space="preserve">               <tspan fill="#ff7b72">- const TAX_RATES: Record&lt;string, number&gt; = { US: 0.08, DE: 0.19, GB: 0.2 };</tspan></text>
+  <text x="22" y="212" xml:space="preserve">               <tspan fill="#3fb950">+ const TAX_RATES: Record&lt;string, number&gt; = { US: 0.08, DE: 0.19, GB: 0 };</tspan></text>
+  <text x="22" y="231" xml:space="preserve">  <tspan fill="#ff7b72">✗</tspan> <tspan fill="#ff7b72" font-weight="700">survived</tspan>   src/checkout.ts:31  <tspan fill-opacity="0.55">string</tspan></text>
+  <text x="22" y="250" xml:space="preserve">               <tspan fill="#ff7b72">- if (coupon === "SAVE10") return amount * 0.1;</tspan></text>
+  <text x="22" y="269" xml:space="preserve">               <tspan fill="#3fb950">+ if (coupon === "") return amount * 0.1;</tspan></text>
+  <text x="22" y="288" xml:space="preserve">  <tspan fill="#ff7b72">✗</tspan> <tspan fill="#ff7b72" font-weight="700">survived</tspan>   src/checkout.ts:32  <tspan fill-opacity="0.55">logical</tspan></text>
+  <text x="22" y="307" xml:space="preserve">               <tspan fill="#ff7b72">- if (coupon === "HALF" &amp;&amp; amount &gt;= 100) return amount / 2;</tspan></text>
+  <text x="22" y="326" xml:space="preserve">               <tspan fill="#3fb950">+ if (coupon === "HALF" || amount &gt;= 100) return amount / 2;</tspan></text>
+  <text x="22" y="345" xml:space="preserve">  <tspan fill="#ff7b72">✗</tspan> <tspan fill="#ff7b72" font-weight="700">survived</tspan>   src/checkout.ts:37  <tspan fill-opacity="0.55">boundary</tspan></text>
+  <text x="22" y="364" xml:space="preserve">               <tspan fill="#ff7b72">- return amount &gt;= FREE_SHIPPING_FROM ? 0 : SHIPPING_FEE;</tspan></text>
+  <text x="22" y="383" xml:space="preserve">               <tspan fill="#3fb950">+ return amount &gt; FREE_SHIPPING_FROM ? 0 : SHIPPING_FEE;</tspan></text>
+  <text x="22" y="402" xml:space="preserve">  <tspan fill="#ff7b72">✗</tspan> <tspan fill="#ff7b72" font-weight="700">survived</tspan>   src/checkout.ts:41  <tspan fill-opacity="0.55">arithmetic</tspan></text>
+  <text x="22" y="421" xml:space="preserve">               <tspan fill="#ff7b72">- return Math.round(amount * (TAX_RATES[country] ?? 0) * 100) / 100;</tspan></text>
+  <text x="22" y="440" xml:space="preserve">               <tspan fill="#3fb950">+ return Math.round(amount / (TAX_RATES[country] ?? 0) * 100) / 100;</tspan></text>
+  <text x="22" y="459" xml:space="preserve">  <tspan fill="#ff7b72">✗</tspan> <tspan fill="#ff7b72" font-weight="700">survived</tspan>   src/checkout.ts:45  <tspan fill-opacity="0.55">condition</tspan></text>
+  <text x="22" y="478" xml:space="preserve">               <tspan fill="#ff7b72">- if (order.items.length === 0) throw new Error("Cart is empty");</tspan></text>
+  <text x="22" y="497" xml:space="preserve">               <tspan fill="#3fb950">+ if (!(order.items.length === 0)) throw new Error("Cart is empty");</tspan></text>
+  <text x="22" y="516" xml:space="preserve">  <tspan fill="#ff7b72">✗</tspan> <tspan fill="#ff7b72" font-weight="700">survived</tspan>   src/checkout.ts:53  <tspan fill-opacity="0.55">number</tspan></text>
+  <text x="22" y="535" xml:space="preserve">               <tspan fill="#ff7b72">- const charge = await gateway.charge(Math.round(amount * 100), "usd");</tspan></text>
+  <text x="22" y="554" xml:space="preserve">               <tspan fill="#3fb950">+ const charge = await gateway.charge(Math.round(amount * 101), "usd");</tspan></text>
+  <text x="22" y="573" xml:space="preserve">  <tspan fill="#ff7b72">✗</tspan> <tspan fill="#ff7b72" font-weight="700">survived</tspan>   src/checkout.ts:54  <tspan fill-opacity="0.55">negation</tspan></text>
+  <text x="22" y="592" xml:space="preserve">               <tspan fill="#ff7b72">- if (!charge.ok) return { status: "declined", total: amount };</tspan></text>
+  <text x="22" y="611" xml:space="preserve">               <tspan fill="#3fb950">+ if (charge.ok) return { status: "declined", total: amount };</tspan></text>
+  <text x="22" y="630" xml:space="preserve">  <tspan fill="#ff7b72">✗</tspan> <tspan fill="#ff7b72" font-weight="700">survived</tspan>   src/checkout.ts:55  <tspan fill-opacity="0.55">string</tspan></text>
+  <text x="22" y="649" xml:space="preserve">               <tspan fill="#ff7b72">- const receipt: Receipt = { status: "paid", total: amount, chargeId: charge.id };</tspan></text>
+  <text x="22" y="668" xml:space="preserve">               <tspan fill="#3fb950">+ const receipt: Receipt = { status: "", total: amount, chargeId: charge.id };</tspan></text>
+  <text x="22" y="687" xml:space="preserve">  <tspan fill="#ff7b72">✗</tspan> <tspan fill="#ff7b72" font-weight="700">survived</tspan>   src/checkout.ts:56  <tspan fill-opacity="0.55">remove-call</tspan></text>
+  <text x="22" y="706" xml:space="preserve">               <tspan fill="#ff7b72">- await mailer.sendReceipt(order.email, receipt);</tspan></text>
+  <text x="22" y="725" xml:space="preserve">               <tspan fill="#3fb950">+ (call deleted)</tspan></text>
+  <text x="22" y="744" xml:space="preserve"></text>
+  <text x="22" y="763" xml:space="preserve">  <tspan fill="#ff7b72" font-weight="700">✖</tspan> <tspan font-weight="700">Your 47 passing tests caught 0 of 10 planted bugs.</tspan> <tspan fill-opacity="0.55">Score: 0%</tspan></text>
+  <text x="22" y="782" xml:space="preserve">    <tspan fill-opacity="0.55">For each survived bug, write a test that fails on it. Then run canfail again.</tspan></text>
+  </g>
+</svg>

@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      # Includes the tests that check the README numbers: 0 of 10 and 10 of 10.
+      - run: npm test
+      # The committed bundle must match src/.
+      - run: npm run check:bundle
+
+  bundle-on-node-18:
+    # The bundle is the product. It must run on the oldest Node we support.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - run: node skills/canfail/scripts/canfail.cjs --version
+      - run: node skills/canfail/scripts/canfail.cjs scan examples/checkout/tests/after
