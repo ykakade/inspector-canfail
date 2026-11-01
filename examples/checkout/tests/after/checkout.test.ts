@@ -98,6 +98,11 @@ describe("checkout", () => {
     expect(mailer.sendReceipt).toHaveBeenCalledExactlyOnceWith("ada@example.com", receipt);
   });
 
+  it("fails when the receipt email fails, so a failure is never hidden", async () => {
+    const mailer = { sendReceipt: vi.fn(async () => { throw new Error("mail server down"); }) } satisfies Mailer;
+    await expect(checkout(order(), fakeGateway(), mailer)).rejects.toThrow("mail server down");
+  });
+
   it("returns a declined receipt and sends no email when the card fails", async () => {
     const mailer = fakeMailer();
     const receipt = await checkout(order(), fakeGateway({ ok: false, id: "" }), mailer);

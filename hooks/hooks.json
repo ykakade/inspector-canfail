@@ -11,6 +11,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/canfail/scripts/canfail.cjs\" stop-hook",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   }
 }

@@ -60,6 +60,26 @@ export const RULES = {
     summary: "The assertion runs after the test ends (no await, no return).",
     fix: "await the promise, or return it from the test.",
   },
+  "focused-test": {
+    severity: "error",
+    summary: ".only makes the runner skip every other test, and the run still looks green.",
+    fix: "Remove .only so that every test runs again.",
+  },
+  "never-runs": {
+    severity: "error",
+    summary: "The test or its assertions can never run, so it can't fail.",
+    fix: "Remove the condition that is always false, or loop over real cases.",
+  },
+  "inverted-test": {
+    severity: "warn",
+    summary: "The test passes only when its assertions fail, so a green run says nothing about the behavior.",
+    fix: "Fix the code and assert the correct behavior. If the failure is known, tell the user.",
+  },
+  "snapshot-only": {
+    severity: "warn",
+    summary: "The only check is a snapshot. It saves the current output, even when that output is wrong.",
+    fix: "Assert the values the requirement gives. Keep the snapshot only as an extra check.",
+  },
   "skipped-test": {
     severity: "warn",
     summary: "The test is skipped. It does not run, but the run still looks green.",
@@ -115,6 +135,8 @@ interface Assertion {
   matcher?: string;
   modifiers: string[];
   args: readonly ts.Expression[];
+  /** A call to a checking function in this file. A try around it may be the test itself. */
+  local?: boolean;
   /** expect() chains only: false when no matcher is called. */
   valid?: boolean;
 }
@@ -124,12 +146,23 @@ interface TestCase {
   name: string;
   fn?: ts.ArrowFunction | ts.FunctionExpression;
   skipped: boolean;
+  focused: boolean;
+  never: boolean;
+  inverted: boolean;
 }
 
 const TEST_NAMES = new Set(["it", "test"]);
 const SKIPPED_TEST_NAMES = new Set(["xit", "xtest"]);
 const SUITE_NAMES = new Set(["describe", "suite", "context"]);
 const SKIPPED_SUITE_NAMES = new Set(["xdescribe", "xcontext"]);
+const FOCUSED_NAMES = new Set(["fit", "fdescribe"]);
+/** `test.beforeEach(...)` and the like: Playwright's `test` object also holds things that aren't tests. */
+const NOT_A_TEST = new Set(["beforeEach", "afterEach", "beforeAll", "afterAll", "use", "step", "extend", "setTimeout", "slow", "info", "fixme", "describe", "each"]);
+/** Chai assertions that are properties: `expect(x).to.be.true`, also `expect(x).true`. */
+const CHAI_PROPERTIES = new Set(["true", "false", "null", "undefined", "NaN", "ok", "exist", "empty", "arguments"]);
+const SNAPSHOT_MATCHERS = new Set(["toMatchSnapshot", "toMatchFileSnapshot"]);
+/** Replaces the spied method. Without one of these, a spy calls the real method. */
+const SPY_REPLACES = /\.(mock(Implementation|ReturnValue|ResolvedValue|RejectedValue)\w*|returns|resolves|rejects|callsFake|throws)\(/;
 
 const MOCK_FACTORIES = new Set([
   "vi.fn",
@@ -148,6 +181,7 @@ const MODULE_MOCKS = new Set(["vi.mock", "vi.doMock", "jest.mock", "jest.doMock"
 const MOCK_API = /^(mock[A-Z]\w*|returns|resolves|rejects|callsFake|withArgs|calledWith|reset|restore)$/;
 const WEAK_MATCHERS = new Set(["toBeDefined", "toBeTruthy", "toBeFalsy", "toBeTypeOf", "toBeInstanceOf"]);
 const WEAK_NEGATED = new Set(["toBeNull", "toBeUndefined", "toThrow", "toBeFalsy", "toBeNaN"]);
+const WEAK_EQUALITY = new Set(["toBe", "toEqual", "toStrictEqual"]);
 const EQUALITY_MATCHERS = new Set(["toBe", "toEqual", "toStrictEqual", "toBeCloseTo", "equal", "eql", "deepEqual"]);
 const CONST_MATCHERS = new Set(["toBeTruthy", "toBeFalsy", "toBeDefined", "toBeUndefined", "toBeNull", "toBeNaN"]);
 const ASSERT_EQUALITY = new Set(["equal", "strictEqual", "deepEqual", "deepStrictEqual", "is", "same"]);
@@ -172,6 +206,7 @@ export function scanSource(file: string, text: string): FileReport {
 
   const tests = collectTests(sf);
   const mocks = collectMocks(sf, file);
+  const helpers = localHelpers(sf);
 
   // File level: modules replaced by mocks.
   const subject = subjectName(file);
@@ -205,10 +240,16 @@ export function scanSource(file: string, text: string): FileReport {
   let weak = 0;
   for (const t of tests) {
     const before = findings.length;
-    if (t.skipped) {
+    if (t.focused) add(t.call.expression, "focused-test", `.only makes the runner skip every other test.`, t.name);
+    if (t.never) {
+      add(t.call.expression, "never-runs", `The condition is a constant, so this test never runs.`, t.name);
+    } else if (t.skipped) {
       add(t.call.expression, "skipped-test", `Skipped. It never runs, and the run still looks green.`, t.name);
     } else if (t.fn) {
-      checkTest(t, sf, mocks, (node, rule, message, severity) => add(node, rule, message, t.name, severity));
+      if (t.inverted) add(t.call.expression, "inverted-test", `This test passes only when its assertions fail.`, t.name);
+      checkTest(t, sf, mocks, helpers, (node, rule, message, severity) => add(node, rule, message, t.name, severity));
+    } else if (t.focused) {
+      // A focused suite: its tests are checked on their own.
     } else {
       continue;
     }
@@ -223,19 +264,20 @@ export function scanSource(file: string, text: string): FileReport {
     }
   }
 
-  return { file, tests: tests.filter((t) => t.fn || t.skipped).length, fake, weak, findings };
+  return { file, tests: tests.filter((t) => t.fn || t.skipped || t.never).length, fake, weak, findings };
 }
 
 function checkTest(
   t: TestCase,
   sf: ts.SourceFile,
   mocks: Mocks,
+  helpers: Helpers,
   add: (node: ts.Node, rule: RuleId, message: string, severity?: Severity) => void,
 ) {
   const fn = t.fn!;
   const contextParam = fn.parameters[0] && ts.isIdentifier(fn.parameters[0].name) ? fn.parameters[0].name.text : undefined;
   const hasDone = contextParam !== undefined && /^(done|cb|callback|next)$/.test(contextParam);
-  const assertions = collectAssertions(fn.body, contextParam);
+  const assertions = collectAssertions(fn.body, contextParam, helpers);
   const usesAssertionCount = /expect\s*\.\s*(assertions|hasAssertions)\s*\(/.test(fn.body.getText());
 
   // no-assertion
@@ -254,14 +296,14 @@ function checkTest(
     }
     // tautology
     const taut = tautology(a);
-    if (taut) add(a.node, "tautology", taut);
+    if (taut) add(a.node, "tautology", taut.message, taut.severity);
     // floating-assertion
     const floating = floatingReason(a, fn, hasDone);
     if (floating) add(a.node, "floating-assertion", floating);
   }
 
   // swallowed-failure and unchecked-throw
-  const inTry = assertions.filter((a) => enclosingTry(a.node, fn)?.where === "try");
+  const inTry = assertions.filter((a) => !a.local && enclosingTry(a.node, fn)?.where === "try");
   for (const a of inTry) {
     const tryStmt = enclosingTry(a.node, fn)!.stmt;
     const handler = tryStmt.catchClause?.block;
@@ -269,7 +311,7 @@ function checkTest(
       add(a.node, "swallowed-failure", `This assertion is inside try, and the catch block swallows its failure.`);
     }
   }
-  const inCatch = assertions.filter((a) => enclosingTry(a.node, fn)?.where === "catch");
+  const inCatch = assertions.filter((a) => !a.local && enclosingTry(a.node, fn)?.where === "catch");
   if (inCatch.length > 0 && inCatch.length === assertions.filter((a) => a.kind !== "fail").length && !usesAssertionCount) {
     const tryStmt = enclosingTry(inCatch[0].node, fn)!.stmt;
     if (!rethrows(tryStmt.tryBlock)) {
@@ -312,6 +354,18 @@ function checkTest(
   if (assertions.every((a) => insideIf(a.node, fn))) {
     add(assertions[0].node, "conditional-assertion", `Every assertion is inside an if. When it is false, nothing is checked.`);
   }
+  const exit = earlyReturn(fn, assertions);
+  if (exit) add(exit, "conditional-assertion", `This return comes before every assertion. When it runs, nothing is checked.`);
+
+  // never-runs
+  if (assertions.every((a) => insideEmptyLoop(a.node, fn))) {
+    add(assertions[0].node, "never-runs", `Every assertion is in a loop over an empty list. Nothing is checked.`);
+  }
+
+  // snapshot-only
+  if (expects.length === assertions.length && expects.every((a) => a.matcher && SNAPSHOT_MATCHERS.has(a.matcher))) {
+    add(expects[0].node, "snapshot-only", `The only check is a snapshot, which saves the current output even when it is wrong.`);
+  }
 }
 
 // ---------------------------------------------------------------- tests
@@ -330,16 +384,17 @@ function collectTests(sf: ts.SourceFile): TestCase[] {
             : nameArg && !isFunctionLike(nameArg)
               ? nameArg.getText()
               : "(unnamed)";
+        const flags = { focused: kind.focused, never: kind.never, inverted: kind.inverted };
         if (kind.type === "suite") {
-          if (kind.skipped && !suiteSkipped) {
-            tests.push({ call: node, name, skipped: true });
+          if ((kind.skipped || kind.never || kind.focused) && !suiteSkipped) {
+            tests.push({ call: node, name, skipped: kind.skipped, ...flags });
           }
-          if (fn) visit(fn.body, suiteSkipped || kind.skipped);
+          if (fn) visit(fn.body, suiteSkipped || kind.skipped || kind.never);
           return;
         }
         if (kind.type === "test" && !kind.todo) {
           if (suiteSkipped) return;
-          tests.push({ call: node, name, fn: kind.skipped ? undefined : fn, skipped: kind.skipped });
+          tests.push({ call: node, name, fn: kind.skipped ? undefined : fn, skipped: kind.skipped, ...flags });
           return;
         }
       }
@@ -350,29 +405,89 @@ function collectTests(sf: ts.SourceFile): TestCase[] {
   return tests;
 }
 
-function classify(call: ts.CallExpression): { type: "test" | "suite"; skipped: boolean; todo: boolean } | undefined {
+function classify(call: ts.CallExpression): { type: "test" | "suite"; skipped: boolean; todo: boolean; focused: boolean; never: boolean; inverted: boolean } | undefined {
   const names: string[] = [];
+  let never = false;
   let cur: ts.Expression = call.expression;
   for (;;) {
     if (ts.isPropertyAccessExpression(cur)) {
       names.unshift(cur.name.text);
       cur = cur.expression;
     } else if (ts.isCallExpression(cur)) {
+      // it.skipIf(true)(name, fn), it.runIf(false)(name, fn)
+      if (ts.isPropertyAccessExpression(cur.expression) && cur.arguments[0]) {
+        const condition = unwrap(cur.arguments[0]).kind;
+        const method = cur.expression.name.text;
+        never ||=
+          (method === "skipIf" && condition === ts.SyntaxKind.TrueKeyword) || (method === "runIf" && condition === ts.SyntaxKind.FalseKeyword);
+      }
       cur = cur.expression; // it.each(table)(name, fn)
     } else break;
   }
   if (!ts.isIdentifier(cur)) return undefined;
   const base = cur.text;
-  const skipped = names.includes("skip") || SKIPPED_TEST_NAMES.has(base) || SKIPPED_SUITE_NAMES.has(base);
-  const todo = names.includes("todo");
-  if (TEST_NAMES.has(base) || SKIPPED_TEST_NAMES.has(base)) return { type: "test", skipped, todo };
-  if (SUITE_NAMES.has(base) || SKIPPED_SUITE_NAMES.has(base)) return { type: "suite", skipped, todo };
+  // `fit.mockClear()`: a variable that only has the name of a test function.
+  if ((FOCUSED_NAMES.has(base) || SKIPPED_TEST_NAMES.has(base) || SKIPPED_SUITE_NAMES.has(base)) && names.some((n) => n !== "each")) return undefined;
+  // A bare `fit()` or `fit(a)` with no test body is a function that only has the name.
+  if (FOCUSED_NAMES.has(base) && !call.arguments.some(isFunctionLike)) return undefined;
+  // Playwright: test.skip(!RUN, "reason") or test.skip(). A real condition is fine, as with skipIf.
+  if (names.includes("skip") && !call.arguments.some(isFunctionLike) && !(call.arguments[0] && ts.isStringLiteralLike(call.arguments[0]))) return undefined;
+  const shared = {
+    skipped: names.includes("skip") || SKIPPED_TEST_NAMES.has(base) || SKIPPED_SUITE_NAMES.has(base),
+    todo: names.includes("todo"),
+    focused: names.includes("only") || FOCUSED_NAMES.has(base),
+    never,
+    inverted: names.includes("fails") || names.includes("failing"),
+  };
+  if (TEST_NAMES.has(base) && names.includes("describe")) return { type: "suite", ...shared }; // Playwright: test.describe()
+  if (TEST_NAMES.has(base) && names.some((n) => NOT_A_TEST.has(n) && n !== "each")) return undefined;
+  if (TEST_NAMES.has(base) || SKIPPED_TEST_NAMES.has(base) || base === "fit") return { type: "test", ...shared };
+  if (SUITE_NAMES.has(base) || SKIPPED_SUITE_NAMES.has(base) || base === "fdescribe") return { type: "suite", ...shared };
   return undefined;
 }
 
 // ---------------------------------------------------------------- assertions
 
-function collectAssertions(body: ts.Node, contextParam: string | undefined): Assertion[] {
+interface Helpers {
+  /** Functions in this file that assert, directly or through another helper. */
+  asserting: Set<string>;
+  /** All functions in this file. */
+  local: Set<string>;
+}
+
+/** roundTrip(a) counts as an assertion if this file's roundTrip() asserts. */
+function localHelpers(sf: ts.SourceFile): Helpers {
+  const bodies = new Map<string, ts.Node>();
+  walk(sf, (node) => {
+    if (ts.isFunctionDeclaration(node) && node.name && node.body) bodies.set(node.name.text, node.body);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && isFunctionLike(node.initializer)) {
+      bodies.set(node.name.text, node.initializer.body);
+    }
+  });
+  const helpers: Helpers = { asserting: new Set(), local: new Set(bodies.keys()) };
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [name, body] of bodies) {
+      if (!helpers.asserting.has(name) && (collectAssertions(body, undefined, helpers).length > 0 || throws(body) || (HELPER.test(name) && !isEmpty(body)))) {
+        helpers.asserting.add(name);
+        grew = true;
+      }
+    }
+  }
+  return helpers;
+}
+
+const isEmpty = (body: ts.Node) => ts.isBlock(body) && body.statements.length === 0;
+
+function throws(body: ts.Node): boolean {
+  let found = false;
+  walk(body, (node) => {
+    if (ts.isThrowStatement(node)) found = true;
+  });
+  return found;
+}
+
+function collectAssertions(body: ts.Node, contextParam: string | undefined, helpers: Helpers): Assertion[] {
   const out: Assertion[] = [];
   walk(body, (node) => {
     if (ts.isPropertyAccessExpression(node) && node.name.text === "should") {
@@ -415,6 +530,11 @@ function collectAssertions(body: ts.Node, contextParam: string | undefined): Ass
       return;
     }
     const name = ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : "";
+    if (ts.isIdentifier(callee) && helpers.local.has(name)) {
+      // The body is in this file, so the name doesn't matter: assertNothing() {} checks nothing.
+      if (helpers.asserting.has(name)) out.push({ node, kind: "helper", local: true, modifiers: [], args: node.arguments });
+      return;
+    }
     if (HELPER.test(name) || name === "expect") {
       out.push({ node, kind: "helper", modifiers: [], args: node.arguments });
     }
@@ -440,9 +560,14 @@ function expectChain(call: ts.CallExpression): Assertion {
   }
   const chai = names.includes("to") || names.includes("be");
   const matcher = names[names.length - 1];
-  const valid = chai
-    ? names.length >= 2
-    : lastWasCall && matcher !== undefined && !["not", "resolves", "rejects"].includes(matcher);
+  // `const e = expect(x)` or `return expect(x)`: the matcher may come later. Only a bare statement is sure to be dangling.
+  const parent = top.parent;
+  const bare = ts.isExpressionStatement(parent) || (ts.isAwaitExpression(parent) && ts.isExpressionStatement(parent.parent));
+  const property = matcher !== undefined && !lastWasCall && CHAI_PROPERTIES.has(matcher);
+  const valid =
+    !bare ||
+    property ||
+    (chai ? names.length >= 2 : lastWasCall && matcher !== undefined && !["not", "resolves", "rejects"].includes(matcher));
   return {
     node: top,
     kind: "expect",
@@ -454,32 +579,47 @@ function expectChain(call: ts.CallExpression): Assertion {
   };
 }
 
-function tautology(a: Assertion): string | undefined {
+function hasCall(node: ts.Node): boolean {
+  let found = false;
+  walk(node, (n) => {
+    if (ts.isCallExpression(n) || ts.isNewExpression(n)) found = true;
+  });
+  return found;
+}
+
+function tautology(a: Assertion): { message: string; severity?: Severity } | undefined {
   if (!a.subject) return undefined;
   const subject = unwrap(a.subject);
+  const sameCode = (expected: ts.Expression): { message: string; severity?: Severity } | undefined => {
+    if (compact(subject) !== compact(expected)) return undefined;
+    if (!hasCall(subject)) return { message: `Compares \`${short(subject.getText())}\` with itself. It is always equal.` };
+    // Two calls give two results, so this can fail. It checks repeatability or caching, and nothing else.
+    if (a.modifiers.includes("not")) return undefined;
+    return { message: `Calls \`${short(subject.getText())}\` twice and compares the results. This checks repeatability, not the value.`, severity: "warn" };
+  };
   if (a.kind === "expect" && a.matcher) {
     if (CONST_MATCHERS.has(a.matcher) && isLiteral(subject)) {
-      return `\`expect(${short(subject.getText())}).${a.matcher}()\` checks a constant. It is always the same.`;
+      return { message: `\`expect(${short(subject.getText())}).${a.matcher}()\` checks a constant. It is always the same.` };
     }
     if (EQUALITY_MATCHERS.has(a.matcher) && a.args[0]) {
       const expected = unwrap(a.args[0]);
       if (isLiteral(subject) && isLiteral(expected)) {
-        return `Compares two constants (${short(subject.getText())} and ${short(expected.getText())}). No code runs.`;
+        return { message: `Compares two constants (${short(subject.getText())} and ${short(expected.getText())}). No code runs.` };
       }
-      if (compact(subject) === compact(expected)) {
-        return `Compares \`${short(subject.getText())}\` with itself. It is always equal.`;
-      }
+      const same = sameCode(expected);
+      if (same) return same;
     }
   }
   if (a.kind === "assert") {
-    if ((a.matcher === "assert" || a.matcher === "ok" || a.matcher === "true") && isLiteral(subject)) {
-      return `\`${short(a.node.getText())}\` checks a constant.`;
+    // assert.ok(false, "...") is a deliberate failure, so only a true constant can't fail.
+    if ((a.matcher === "assert" || a.matcher === "ok" || a.matcher === "true") && subject.kind !== ts.SyntaxKind.FalseKeyword && isLiteral(subject)) {
+      return { message: `\`${short(a.node.getText())}\` checks a constant.` };
     }
     if (a.matcher && ASSERT_EQUALITY.has(a.matcher) && a.args[0]) {
       const expected = unwrap(a.args[0]);
-      if ((isLiteral(subject) && isLiteral(expected)) || compact(subject) === compact(expected)) {
-        return `\`${short(a.node.getText())}\` compares a value that cannot change.`;
-      }
+      if (isLiteral(subject) && isLiteral(expected)) return { message: `\`${short(a.node.getText())}\` compares a value that cannot change.` };
+      const same = sameCode(expected);
+      if (same) return same;
     }
   }
   return undefined;
@@ -488,7 +628,11 @@ function tautology(a: Assertion): string | undefined {
 function isWeak(a: Assertion): boolean {
   if (!a.matcher) return false;
   const negated = a.modifiers.includes("not");
-  if (negated) return WEAK_NEGATED.has(a.matcher);
+  const expected = a.args[0] && unwrap(a.args[0]);
+  const expectedText = expected ? compact(expected) : "";
+  if (negated) return WEAK_NEGATED.has(a.matcher) || (WEAK_EQUALITY.has(a.matcher) && (expectedText === "null" || expectedText === "undefined"));
+  if (WEAK_EQUALITY.has(a.matcher) && /^expect\.(any|anything)\(/.test(expectedText)) return true;
+  if (a.matcher === "toBeGreaterThanOrEqual" && expectedText === "0") return true;
   if (WEAK_MATCHERS.has(a.matcher)) return true;
   if (a.matcher === "toHaveBeenCalled" || a.matcher === "toHaveProperty") return a.args.length <= 1;
   if (a.matcher === "toBe" && a.subject && ts.isTypeOfExpression(unwrap(a.subject))) return true;
@@ -498,7 +642,10 @@ function isWeak(a: Assertion): boolean {
 function floatingReason(a: Assertion, fn: ts.Node, hasDone: boolean): string | undefined {
   // expect(p).resolves.toBe(x) without await / return
   if (a.kind === "expect" && (a.modifiers.includes("resolves") || a.modifiers.includes("rejects"))) {
-    if (ts.isExpressionStatement(a.node.parent)) {
+    const p = a.node.parent;
+    const unused =
+      ts.isVariableDeclaration(p) && ts.isIdentifier(p.name) && !new RegExp(`\\b${p.name.text}\\b`).test(fn.getText().replace(p.getText(), ""));
+    if (ts.isExpressionStatement(p) || unused) {
       return `\`.${a.modifiers.includes("resolves") ? "resolves" : "rejects"}\` returns a promise, and nothing awaits it. The test ends first.`;
     }
   }
@@ -552,6 +699,47 @@ function rethrows(block: ts.Node): boolean {
   return found;
 }
 
+/** `if (x) return;` before the first assertion: when it runs, the test checks nothing. */
+function earlyReturn(fn: ts.ArrowFunction | ts.FunctionExpression, assertions: Assertion[]): ts.Node | undefined {
+  if (!ts.isBlock(fn.body)) return undefined;
+  const first = Math.min(...assertions.map((a) => a.node.getStart()));
+  for (const stmt of fn.body.statements) {
+    if (stmt.getEnd() > first) return undefined;
+    if (!ts.isIfStatement(stmt)) continue;
+    let exit: ts.Node | undefined;
+    let reported = false;
+    walk(stmt, (node) => {
+      if (isFunctionLike(node)) return "skip";
+      if (ts.isReturnStatement(node)) exit ??= node;
+      // test.skip(true, "reason"); return: the runner shows this test as skipped, so nothing is hidden.
+      if (ts.isCallExpression(node) && /\.skip$/.test(compact(node.expression))) reported = true;
+    });
+    if (exit && !reported) return exit;
+  }
+  return undefined;
+}
+
+function isEmptyList(node: ts.Expression): boolean {
+  const e = unwrap(node);
+  return ts.isArrayLiteralExpression(e) && e.elements.length === 0;
+}
+
+function insideEmptyLoop(node: ts.Node, stop: ts.Node): boolean {
+  for (let cur = node.parent; cur && cur !== stop; cur = cur.parent) {
+    if (ts.isForOfStatement(cur) && isEmptyList(cur.expression)) return true;
+    if (
+      isFunctionLike(cur) &&
+      ts.isCallExpression(cur.parent) &&
+      ts.isPropertyAccessExpression(cur.parent.expression) &&
+      ["forEach", "map", "filter", "some", "every"].includes(cur.parent.expression.name.text) &&
+      isEmptyList(cur.parent.expression.expression)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function insideIf(node: ts.Node, stop: ts.Node): boolean {
   let child = node;
   for (let cur = node.parent; cur && cur !== stop; child = cur, cur = cur.parent) {
@@ -584,6 +772,8 @@ interface Mocks {
 
 function collectMocks(sf: ts.SourceFile, file: string): Mocks {
   const mocks: Mocks = { paths: new Set(), prefixes: [], modules: [], imports: [] };
+  /** Spies that still call the real method, by the variable that holds them. */
+  const spies = new Map<string, string>();
 
   const addObject = (prefix: string, obj: ts.ObjectLiteralExpression) => {
     for (const prop of obj.properties) {
@@ -599,7 +789,10 @@ function collectMocks(sf: ts.SourceFile, file: string): Mocks {
     if (isMockFactory(value)) {
       mocks.paths.add(target);
       const spied = spyTarget(value);
-      if (spied) mocks.paths.add(spied);
+      if (spied) {
+        if (spyReplaces(value)) mocks.paths.add(spied);
+        else spies.set(target, spied);
+      }
     } else if (ts.isObjectLiteralExpression(value)) {
       addObject(target, value);
     }
@@ -615,12 +808,16 @@ function collectMocks(sf: ts.SourceFile, file: string): Mocks {
     if (ts.isCallExpression(node)) {
       const callee = compact(node.expression);
       const spied = isMockFactory(node) ? spyTarget(node) : undefined;
-      if (spied) mocks.paths.add(spied);
+      if (spied && spyReplaces(node)) mocks.paths.add(spied);
       if (callee === "vi.mocked" || callee === "jest.mocked") {
         if (node.arguments[0]) mocks.paths.add(compact(node.arguments[0]));
       }
       if (ts.isPropertyAccessExpression(node.expression) && MOCK_API.test(node.expression.name.text) && /^mock/.test(node.expression.name.text)) {
-        mocks.paths.add(compact(node.expression.expression));
+        const holder = compact(node.expression.expression);
+        mocks.paths.add(holder);
+        // spy.mockReturnValue(1) on a later line: now the spy does replace the method.
+        const target = spies.get(holder);
+        if (target && SPY_REPLACES.test(`.${node.expression.name.text}(`)) mocks.paths.add(target);
       }
       if (MODULE_MOCKS.has(callee) && node.arguments[0] && ts.isStringLiteralLike(node.arguments[0])) {
         const spec = node.arguments[0].text;
@@ -662,6 +859,18 @@ function collectMocks(sf: ts.SourceFile, file: string): Mocks {
 function isMockFactory(node: ts.Expression): boolean {
   const call = innermostCall(node);
   return !!call && MOCK_FACTORIES.has(compact(call.expression));
+}
+
+/** `vi.spyOn(a, "b")` alone calls the real method. It replaces it only with a mock implementation. */
+function spyReplaces(node: ts.Expression): boolean {
+  if (/^sinon\.stub\b/.test(compact(innermostCall(node)!.expression))) return true;
+  let top: ts.Node = node;
+  for (;;) {
+    const p: ts.Node = top.parent;
+    if ((ts.isPropertyAccessExpression(p) && p.expression === top) || (ts.isCallExpression(p) && p.expression === top)) top = p;
+    else break;
+  }
+  return SPY_REPLACES.test(top.getText());
 }
 
 function spyTarget(node: ts.Expression): string | undefined {

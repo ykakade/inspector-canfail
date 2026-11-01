@@ -1,10 +1,9 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
-import { countPassed, defaultTimeout, journalPath, prove, ProveError, restore, runCommand } from "../src/prove";
+import { countPassed, defaultTimeout, hasTestFailure, journalPath, prove, ProveError, recover, restore, runCommand } from "../src/prove";
 
 // A tiny project: one source file and a test script that uses node:assert.
 const SOURCE = `exports.price = (qty, unit) => qty >= 10 ? qty * unit * 0.9 : qty * unit;\n`;
@@ -71,9 +70,13 @@ describe("prove", () => {
   });
 
   it("puts the mutated file name in {file}", async () => {
-    write("echo.js", `require("node:fs").appendFileSync("seen.txt", process.argv[2] + "\\n");`);
+    write("echo.js", `require("node:fs").appendFileSync(process.env.SEEN, process.argv[2] + "\\n"); require("./" + process.argv[2]);`);
+    const seen = path.join(dir, "seen.txt");
+    process.env.SEEN = seen;
     await prove({ cwd: dir, files: [file()], cmd: "node echo.js {file}", bugs: 1, seed: 1 });
-    expect(readFileSync(path.join(dir, "seen.txt"), "utf8")).toBe("{file}\nprice.js\n");
+    delete process.env.SEEN;
+    // Clean run twice, the reach check, one bug, the last clean run. No literal "{file}".
+    expect(readFileSync(seen, "utf8")).toBe("price.js\n".repeat(5));
   });
 
   it("refuses to start when the tests already fail", async () => {
@@ -104,16 +107,118 @@ describe("prove", () => {
 });
 
 describe("restore", () => {
-  it("restores a file that a crashed run left mutated", () => {
-    const journal = path.join(os.tmpdir(), "canfail");
-    mkdirSync(journal, { recursive: true });
-    // Simulate a crash: write a journal, then break the file.
-    const id = createHash("sha1").update(path.resolve(dir)).digest("hex").slice(0, 12);
-    writeFileSync(path.join(journal, `${id}.json`), JSON.stringify({ [file()]: SOURCE }));
-    write("price.js", "exports.price = () => 0;\n");
+  const BUG = "exports.price = () => 0;\n";
+  const killedRun = (active = BUG) => {
+    mkdirSync(path.dirname(journalPath(dir)), { recursive: true });
+    writeFileSync(journalPath(dir), JSON.stringify({ originals: { [file()]: SOURCE }, active: { file: file(), text: active } }));
+  };
+
+  it("removes the bug that a killed run left in a file", () => {
+    killedRun();
+    write("price.js", BUG);
     expect(restore(dir)).toEqual([file()]);
     expect(readFileSync(file(), "utf8")).toBe(SOURCE);
     expect(restore(dir)).toEqual([]);
+  });
+
+  it("never overwrites work done after the killed run", async () => {
+    killedRun();
+    const work = SOURCE + "// new work\n";
+    write("price.js", work);
+    write("strong.test.js", STRONG);
+    const notices: string[] = [];
+    await prove({ cwd: dir, files: [file()], cmd: "node strong.test.js", bugs: 1, seed: 1, onNotice: (m) => notices.push(m) });
+    expect(readFileSync(file(), "utf8")).toBe(work);
+    expect(notices.join()).toContain("left alone");
+  });
+
+  it("survives a damaged journal", () => {
+    mkdirSync(path.dirname(journalPath(dir)), { recursive: true });
+    writeFileSync(journalPath(dir), '{"originals":{"a.js":"trunc');
+    expect(recover(dir)).toEqual({ restored: [], kept: [], corrupt: true });
+    expect(existsSync(journalPath(dir))).toBe(false);
+  });
+});
+
+describe("results that can be trusted", () => {
+  it("edits a copy by default, so the real file never changes during a run", async () => {
+    write("watch.test.js", STRONG);
+    const seen: string[] = [];
+    await prove({ cwd: dir, files: [file()], cmd: "node watch.test.js", bugs: 2, seed: 1, onResult: () => seen.push(readFileSync(file(), "utf8")) });
+    expect(new Set(seen)).toEqual(new Set([SOURCE]));
+  });
+
+  it("runs in parallel with --jobs, and each bug gets one result", async () => {
+    write("strong.test.js", STRONG);
+    const result = await prove({ cwd: dir, files: [file()], cmd: "node strong.test.js", bugs: "all", seed: 1, jobs: 3 });
+    expect(result.results).toHaveLength(result.candidates);
+    expect(result.score).toBe(100);
+  });
+
+  it("refuses a suite that passes once, then fails with no bug", async () => {
+    write("flaky.test.js", `const fs = require("node:fs"); if (fs.existsSync(process.env.MARK)) process.exit(1); fs.writeFileSync(process.env.MARK, "");`);
+    process.env.MARK = path.join(dir, "mark");
+    const run = prove({ cwd: dir, files: [file()], cmd: "node flaky.test.js", bugs: 1, seed: 1 });
+    await expect(run).rejects.toThrow(/flaky/);
+    delete process.env.MARK;
+  });
+
+  it("refuses the results when the clean run fails after the bugs", async () => {
+    // Passes three times (two clean runs and the reach check needs a failure), then always fails.
+    write("late.test.js", `const fs = require("node:fs"); const n = fs.existsSync(process.env.MARK) ? Number(fs.readFileSync(process.env.MARK, "utf8")) : 0; fs.writeFileSync(process.env.MARK, String(n + 1)); require("./price.js"); if (n >= 2) process.exit(1);`);
+    process.env.MARK = path.join(dir, "mark");
+    const run = prove({ cwd: dir, files: [file()], cmd: "node late.test.js", bugs: 1, seed: 1 });
+    await expect(run).rejects.toThrow(/can't be trusted/);
+    delete process.env.MARK;
+  });
+
+  it("says when no test loads the file, and does not ask for more tests", async () => {
+    const run = prove({ cwd: dir, files: [file()], cmd: "node -e 0", bugs: 1, seed: 1 });
+    await expect(run).rejects.toThrow(/No test loads the code/);
+  });
+
+  it("reports a file no test loads next to one that is tested", async () => {
+    write("other.js", "exports.o = (a) => a + 1;\n");
+    write("strong.test.js", STRONG);
+    const result = await prove({ cwd: dir, files: [file(), path.join(dir, "other.js")], cmd: "node strong.test.js", bugs: "all", seed: 1 });
+    expect(result.unreached).toEqual([path.join(dir, "other.js")]);
+    expect(result.results.every((r) => r.file === file())).toBe(true);
+  });
+
+  it("keeps compile errors out of the score", async () => {
+    // Prints a test summary, and on a planted bug fails like a compiler: no failed test in the output.
+    write("build.test.js", `const fs = require("node:fs"); if (fs.readFileSync("price.js", "utf8").includes("canfail:")) process.exit(1); if (fs.readFileSync("price.js", "utf8") !== ${JSON.stringify(SOURCE)}) { console.log("error TS1005"); process.exit(1); } console.log("Tests  1 passed");`);
+    const run = prove({ cwd: dir, files: [file()], cmd: "node build.test.js", bugs: "all", seed: 1 });
+    await expect(run).rejects.toThrow(/Nothing was measured/);
+  });
+
+  it("marks lines with no coverage without a test run", async () => {
+    write("strong.test.js", STRONG);
+    const result = await prove({ cwd: dir, files: [file()], cmd: "node strong.test.js", bugs: "all", seed: 1, uncovered: new Map([[file(), new Set([1])]]) });
+    expect(result.uncovered).toBe(result.results.length);
+    expect(result.score).toBe(0);
+  });
+
+  it("stops a command that never ends", async () => {
+    const run = prove({ cwd: dir, files: [file()], cmd: "node -e \"setTimeout(()=>{},60000)\"", bugs: 1, seed: 1, timeoutMs: 300 });
+    await expect(run).rejects.toThrow(/watch mode/);
+  });
+});
+
+describe("hasTestFailure", () => {
+  it.each([
+    ["Tests  1 failed | 3 passed (4)", true],
+    ["Tests:       1 failed, 3 passed, 4 total", true],
+    ["# fail 2", true],
+    ["ℹ fail 1", true],
+    ["  3 failing", true],
+    ["AssertionError [ERR_ASSERTION]", true],
+    ["# fail 0", false],
+    ["ℹ fail 0", false],
+    ["Test Files  1 failed (1)\n  Tests  no tests", false],
+    ["error TS1005: ';' expected.", false],
+  ])("%j gives %s", (output, expected) => {
+    expect(hasTestFailure(output)).toBe(expected);
   });
 });
 

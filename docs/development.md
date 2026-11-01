@@ -19,23 +19,25 @@ npm run prove:self
 
 For a new scan rule, include an ineffective test it should flag and a valid test it should leave alone. Prefer small reproductions over large fixtures.
 
-The integration suite checks the demo: 47 passing tests catch none of the 10 sampled mutations, while the 19 behavior tests catch all 10. These are demonstration fixtures, not collected agent benchmark runs. Run `npm run demo` to see the output.
+The integration suite checks the demo: 47 passing tests catch none of the 10 sampled mutations, while the 20 behavior tests catch all 10. These are demonstration fixtures, not collected agent benchmark runs. Run `npm run demo` to see the output.
 
 `prove:self` mutates the scanner, mutation engine, and runner against the project's own tests. It skips the two demo mutation runs to avoid nested mutation testing. Review survivors before deciding whether they need a test; the project does not currently catch every self-mutation.
 
 ## Recorded self-check
 
-At commit [`0631a37`](https://github.com/ykakade/inspector-canfail/commit/0631a37), the recorded run caught **123 of 150 mutations (82%)**, with 90 tests running and the two demo runs skipped. Twenty-seven mutations survived, including lookup-table entries, `spyOn` paths, and journal setup. This is a historical result, not a live score for the current checkout.
+On version 0.2.0, the recorded run caught **123 of 150 mutations (82%)**, with 173 tests running and the demo runs skipped. Seven of the 123 are timeouts. Twenty-seven mutations survived, including checks in the new journal, the flaky-test message, and `??` defaults. This is a historical result, not a live score for the current checkout.
 
 To repeat that sample:
 
 ```bash
-npm run prove:self -- --bugs 150 --seed 7
+npm run prove:self -- --bugs 150 --seed 7 --jobs 6
 ```
 
-The scanner also has a known false positive in the seed-repeatability test in `test/mutate.test.ts`: it flags two independent calls with identical arguments as a tautology. That comparison checks determinism. Review findings in context rather than removing a useful assertion to satisfy the scanner.
-
 Earlier runs found an actual bug: the method-swap lookup was a plain object. A call to `chunk.toString()` could find the inherited `Object.prototype.toString` function and insert it as replacement text. The lookup is now a `Map`, with a regression test. That is the sort of outcome these checks are for; a higher score alone is not the goal.
+
+## Benchmark
+
+[`benchmark/`](../benchmark) holds the tasks, the runner, and the scorer. See [the results](benchmark.md). Do not change a task or a hidden bug and then compare with an old result.
 
 ## README language
 

@@ -1,0 +1,39 @@
+name: Inspector Canfail
+description: Check that the tests in a pull request can fail.
+branding:
+  icon: search
+  color: gray-dark
+inputs:
+  cmd:
+    description: Test command. It must not use watch mode.
+    default: npm test
+  since:
+    description: Compare with this ref. The default is the base branch of the pull request.
+    default: ""
+  bugs:
+    description: How many mutations to try.
+    default: "10"
+  min-score:
+    description: The required percentage caught.
+    default: "100"
+  jobs:
+    description: Test runs at the same time.
+    default: "1"
+  comment:
+    description: Add the summary to the pull request as a comment. Needs pull-requests write permission.
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: node "$GITHUB_ACTION_PATH/scripts/action.mjs"
+      env:
+        INPUT_CMD: ${{ inputs.cmd }}
+        INPUT_SINCE: ${{ inputs.since }}
+        INPUT_BUGS: ${{ inputs.bugs }}
+        INPUT_MIN_SCORE: ${{ inputs.min-score }}
+        INPUT_JOBS: ${{ inputs.jobs }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        BASE_REF: ${{ github.base_ref }}
+        GH_TOKEN: ${{ github.token }}

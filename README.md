@@ -23,7 +23,7 @@ She looks lost. Your tests should be worried.
 
 Inspector Canfail is a skill and a zero-config JavaScript/TypeScript checker for AI coding agents. The CLI and skill are named `canfail`.
 
-[Install](#install) · [Example](#before-and-after) · [Commands](#commands)
+[Install](#install) · [Example](#before-and-after) · [Benchmark](#benchmark) · [Commands](#commands)
 
 ## Before and after
 
@@ -57,7 +57,7 @@ Two test suites use the same checkout module. The two test suites pass before ca
 | Test suite | Tests that pass | Tests that do not run | Errors found |
 |---|---:|---:|---:|
 | [Tests with incorrect checks](examples/checkout/tests/before) | 47 | 1 | 0 of 10 |
-| [Tests of required behavior](examples/checkout/tests/after/checkout.test.ts) | 19 | 0 | 10 of 10 |
+| [Tests of required behavior](examples/checkout/tests/after/checkout.test.ts) | 20 | 0 | 10 of 10 |
 
 This project includes these example test suites. These results do not measure the performance of an AI agent.
 
@@ -71,6 +71,16 @@ npm run demo
 ```
 
 The [integration tests](test/cli.test.ts) make sure that these results stay correct.
+
+## Benchmark
+
+We ran Claude Code 144 times on 8 small modules, with and without canfail. Each agent wrote tests. We then scored the tests against bugs that the agents did not see. We wrote these bugs by hand.
+
+<p align="center">
+  <img src="assets/canfail-benchmark.png" width="760" alt="Share of hidden bugs caught. Clear spec with Sonnet: 100.0% without canfail, 100.0% with canfail. Terse prompt with Sonnet: 90.0% and 98.6%. Terse prompt with Haiku: 93.2% and 95.4%. Runs with canfail take 2.6 to 3.8 times longer and cost 1.4 to 1.6 times more.">
+</p>
+
+Canfail helps most when the prompt is short and the agent does not look for a specification. It gave no improvement when the agent had a clear specification, and it costs time. The image shows version 0.1.0; version 0.2.0 gives similar scores and is slower. In one module, the agents without canfail found a real bug that the agents with canfail did not find. This is a small benchmark. Read the [method and all the results](docs/benchmark.md).
 
 ## How it works
 
@@ -145,15 +155,28 @@ These examples use `canfail` for `npx github:ykakade/inspector-canfail`.
 | `canfail scan [test paths]` | Find test patterns with incorrect assertions. |
 | `canfail prove [source paths]` | Run the tests against small changes to the source code. |
 | `canfail rules` | Show the scan rules. |
-| `canfail restore` | Restore source files after an interrupted run. |
+| `canfail restore` | Restore source files after an interrupted `--in-place` run. |
+| `canfail demo` | Show a fake test and a real test. You do not need a project. |
 
 With no command, canfail starts `scan`, then `prove`.
 
-`scan` examines test files without a test run. It finds 12 patterns, such as assertions that do not run. It gives warnings for weak assertions and skipped tests. The [rule examples](skills/canfail/references/fake-tests.md) show each pattern.
+`scan` examines test files without a test run. It finds 16 patterns, such as assertions that do not run and `.only`. It gives warnings for weak assertions and skipped tests. The [rule examples](skills/canfail/references/fake-tests.md) show each pattern.
 
 `prove` changes the source code, one change at a time. Each change is a **mutation**. For example, it can change `>=` to `>` or remove a function call.
 
-`prove` first makes sure that the tests pass without mutations. It then runs the test command for each mutation. It uses up to 10 mutations unless you select a different number.
+`prove` works in a temporary copy of your project. It makes sure that the tests pass two times without mutations, and that the tests load each source file. It then runs the test command for each mutation. It uses up to 10 mutations unless you select a different number.
+
+To check only the lines that changed on a branch, use this command:
+
+```bash
+npx github:ykakade/inspector-canfail prove --since main --cmd "npm test"
+```
+
+To see a fake test and a real test without a project, use this command:
+
+```bash
+npx github:ykakade/inspector-canfail demo
+```
 
 To select a source file and a test command, use this command:
 
@@ -169,17 +192,21 @@ If the tests pass with a mutation, examine the result. Add a test only if the mu
 
 **Does canfail change my source files?**
 
-Yes. `prove` saves the source text before each run. It restores that text after each mutation, when the run stops, and on Ctrl-C or SIGTERM.
+No. `prove` changes a temporary copy of the project. You can continue to work during a run.
 
-After a forced stop, use `canfail restore` from the same project directory. Do not edit source files during a run.
+If your tests need the real directory, use `--in-place`. Then `prove` changes your files and restores them after each mutation. After a forced stop, use `canfail restore` from the same project directory. `restore` removes only a planted bug. It does not overwrite your later changes.
 
 **Are the tests correct if the score is 100%?**
 
-No. The score shows the result for the mutations in that run. Type errors, timeouts, and other command failures can increase the score. Some mutations do not change required behavior.
+No. The score shows the result for the mutations in that run. Timeouts increase the score. If canfail cannot read the output of your test runner, other command failures also increase the score. Some mutations do not change required behavior.
 
 **Can a scan result be incorrect?**
 
 Yes. The scan finds code patterns. It does not find all test errors. Examine each result before you change a test.
+
+**Does canfail make an agent write better tests?**
+
+Sometimes. In [our benchmark](docs/benchmark.md), it made no difference when Sonnet had a clear specification: both groups caught all the bugs. With a short prompt, Sonnet caught 98.6% of the bugs with canfail and 90.0% without. With Haiku, the difference was too small to be certain. A run with canfail takes about 3 to 5 times longer.
 
 **When must a test fail?**
 

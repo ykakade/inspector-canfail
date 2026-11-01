@@ -1,17 +1,23 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, copyFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { applyMutant, findMutants, type Mutant, mutantLines, pickMutants } from "./mutate.js";
+import { applyMutant, findMutants, type Mutant, mutantHint, mutantLines, pickMutants } from "./mutate.js";
 
-export type Status = "caught" | "survived" | "timeout";
+/**
+ * caught: a test failed. survived: the tests still passed. timeout: the run hit the time limit.
+ * crashed: the command failed, but no test failed, as with a compile error. Not in the score.
+ * uncovered: the coverage report says no test runs this line. No test run is needed.
+ */
+export type Status = "caught" | "survived" | "timeout" | "crashed" | "uncovered";
 
 export interface MutantResult extends Mutant {
   status: Status;
   durationMs: number;
   before: string;
   after: string;
+  hint: string;
 }
 
 export interface ProveOptions {
@@ -21,6 +27,15 @@ export interface ProveOptions {
   bugs: number | "all";
   seed: number;
   timeoutMs?: number;
+  /** Edit the real files, not a temporary copy of the project. */
+  inPlace?: boolean;
+  /** Runs at the same time, each in its own copy. Ignored with inPlace. */
+  jobs?: number;
+  /** Only plant bugs on these lines. */
+  lines?: Map<string, Set<number>>;
+  /** Lines the coverage report says no test runs. */
+  uncovered?: Map<string, Set<number>>;
+  onNotice?: (message: string) => void;
   onBaseline?: (baseline: Baseline) => void;
   onResult?: (result: MutantResult, index: number, total: number) => void;
 }
@@ -36,8 +51,13 @@ export interface ProveResult {
   baseline: Baseline;
   candidates: number;
   results: MutantResult[];
+  /** Files that no test loads: a thrown error at the top of the file did not fail the command. */
+  unreached: string[];
   caught: number;
   survived: number;
+  timedOut: number;
+  crashed: number;
+  uncovered: number;
   score: number;
 }
 
@@ -50,6 +70,9 @@ export class ProveError extends Error {
   }
 }
 
+/** There is nothing to check, which is not a failure: a diff with no code to mutate. */
+export class NothingToProve extends Error {}
+
 interface RunResult {
   code: number | null;
   timedOut: boolean;
@@ -57,7 +80,7 @@ interface RunResult {
   durationMs: number;
 }
 
-let active: { kill: () => void } | undefined;
+const active = new Set<() => void>();
 
 export function runCommand(cmd: string, cwd: string, timeoutMs = 0): Promise<RunResult> {
   const started = Date.now();
@@ -81,14 +104,14 @@ export function runCommand(cmd: string, cwd: string, timeoutMs = 0): Promise<Run
       // The group exited between the check and the kill.
     }
   };
-  active = { kill };
+  active.add(kill);
   let timedOut = false;
   const timer = timeoutMs > 0 ? setTimeout(() => ((timedOut = true), kill()), timeoutMs) : undefined;
 
   return new Promise((resolve) => {
     child.on("close", (code) => {
       if (timer) clearTimeout(timer);
-      active = undefined;
+      active.delete(kill);
       resolve({ code, timedOut, output, durationMs: Date.now() - started });
     });
   });
@@ -97,7 +120,7 @@ export function runCommand(cmd: string, cwd: string, timeoutMs = 0): Promise<Run
 /** Reads "47 passed" style summaries from vitest, jest, node:test, mocha and bun. */
 export function countPassed(output: string): number | null {
   const patterns = [
-    /Tests:?\s+(?:\d+ failed, )?(?:\d+ skipped, )?(\d+) passed/, // jest, vitest
+    /Tests:?\s+(?:\d+ failed(?:, | \| ))?(?:\d+ skipped(?:, | \| ))?(\d+) passed/, // jest, vitest
     /^#\s*pass\s+(\d+)/m, // node:test (tap)
     /ℹ pass (\d+)/, // node:test (spec)
     /(\d+) passing/, // mocha
@@ -110,66 +133,168 @@ export function countPassed(output: string): number | null {
   return null;
 }
 
+/** True when the output shows that a test failed, not only that the command did. */
+export function hasTestFailure(output: string): boolean {
+  return [
+    /Tests:?\s+[^\n]*\b[1-9]\d* failed/, // jest, vitest
+    /^#\s*fail\s+[1-9]/m, // node:test (tap)
+    /ℹ fail [1-9]/, // node:test (spec)
+    /\b[1-9]\d* failing/, // mocha
+    /^\s*[1-9]\d* fail\b/m, // bun
+    /AssertionError/, // a plain script that uses node:assert
+  ].some((re) => re.test(output));
+}
+
+export function statusOf(run: RunResult, baseline: Baseline): Status {
+  if (run.timedOut) return "timeout";
+  if (run.code === 0) return "survived";
+  if (hasTestFailure(run.output) || baseline.passed === null) return "caught"; // a runner we can't read: trust the exit code
+  return "crashed";
+}
+
 /** A planted bug can cause an endless loop. Stop a run at 3x the clean run, but never before 10s. */
 export function defaultTimeout(baselineMs: number): number {
   return Math.max(10_000, baselineMs * 3);
 }
 
+/** The clean run has no number to scale from. A watch-mode command never ends, so stop at 10 minutes. */
+const BASELINE_LIMIT_MS = 600_000;
+
 // ---------------------------------------------------------------- journal
 
 export function journalPath(cwd: string): string {
   const id = createHash("sha1").update(path.resolve(cwd)).digest("hex").slice(0, 12);
-  return path.join(os.tmpdir(), "canfail", `${id}.json`);
+  const cache = process.env.XDG_CACHE_HOME || process.env.LOCALAPPDATA || path.join(os.homedir(), ".cache");
+  return path.join(cache, "canfail", `${id}.json`); // not in the temp dir: a reboot must not lose it
+}
+
+interface Journal {
+  originals: Record<string, string>;
+  /** The bug in the file right now. Only this exact text is canfail's to overwrite. */
+  active?: { file: string; text: string };
+}
+
+function writeJournal(file: string, journal: Journal) {
+  mkdirSync(path.dirname(file), { recursive: true });
+  const partial = `${file}.${process.pid}.tmp`;
+  writeFileSync(partial, JSON.stringify(journal));
+  renameSync(partial, file); // a kill mid-write must not leave half a journal
+}
+
+export interface Recovery {
+  restored: string[];
+  /** Files with text canfail did not write. They were left alone. */
+  kept: string[];
+  corrupt: boolean;
+}
+
+/** After a killed run: removes the bug canfail left in a file. It never overwrites other changes. */
+export function recover(cwd: string): Recovery {
+  const file = journalPath(cwd);
+  const out: Recovery = { restored: [], kept: [], corrupt: false };
+  if (!existsSync(file)) return out;
+  let journal: Journal;
+  try {
+    journal = JSON.parse(readFileSync(file, "utf8"));
+    if (typeof journal.originals !== "object" || journal.originals === null) throw new Error("no originals");
+  } catch {
+    rmSync(file, { force: true });
+    return { ...out, corrupt: true };
+  }
+  for (const [target, original] of Object.entries(journal.originals)) {
+    if (!existsSync(target)) {
+      out.kept.push(target);
+      continue;
+    }
+    const current = readFileSync(target, "utf8");
+    if (current === original) continue;
+    if (journal.active?.file === target && journal.active.text === current) {
+      writeFileSync(target, original);
+      out.restored.push(target);
+    } else {
+      out.kept.push(target);
+    }
+  }
+  rmSync(file, { force: true });
+  return out;
 }
 
 /** Puts back every file a killed run left mutated. Returns the files it restored. */
 export function restore(cwd: string): string[] {
-  const journal = journalPath(cwd);
-  if (!existsSync(journal)) return [];
-  const saved: Record<string, string> = JSON.parse(readFileSync(journal, "utf8"));
-  const restored: string[] = [];
-  for (const [file, text] of Object.entries(saved)) {
-    if (!existsSync(file) || readFileSync(file, "utf8") !== text) {
-      writeFileSync(file, text);
-      restored.push(file);
-    }
+  return recover(cwd).restored;
+}
+
+// ---------------------------------------------------------------- workspaces
+
+const NOT_COPIED = new Set([".git", ".next", ".turbo", "coverage"]);
+
+function copyTree(from: string, to: string) {
+  mkdirSync(to, { recursive: true });
+  for (const entry of readdirSync(from, { withFileTypes: true })) {
+    const source = path.join(from, entry.name);
+    const target = path.join(to, entry.name);
+    if (NOT_COPIED.has(entry.name)) continue;
+    if (entry.name === "node_modules") symlinkSync(source, target, "junction");
+    else if (entry.isSymbolicLink()) symlinkSync(readlinkSync(source), target);
+    else if (entry.isDirectory()) copyTree(source, target);
+    else if (lstatSync(source).isFile()) copyFileSync(source, target);
   }
-  rmSync(journal, { force: true });
-  return restored;
+}
+
+function makeCopy(cwd: string): string {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "canfail-copy-"));
+  copyTree(cwd, dir);
+  return dir;
+}
+
+/** A top-level throw. If the command still passes, no test loads this file. */
+export function withCanary(text: string): string {
+  const canary = 'throw new Error("canfail: is this file reached?");\n';
+  if (!text.startsWith("#!")) return canary + text;
+  const end = text.indexOf("\n") + 1;
+  return text.slice(0, end) + canary + text.slice(end);
 }
 
 // ---------------------------------------------------------------- prove
 
 export async function prove(opts: ProveOptions): Promise<ProveResult> {
   const { cwd, cmd } = opts;
-  restore(cwd); // a previous run may have been killed mid-bug
+  const inPlace = opts.inPlace ?? false;
+  const recovery = recover(cwd); // a previous run may have been killed mid-bug
+  const named = (files: string[]) => files.map((f) => path.relative(cwd, f)).join(", ");
+  if (recovery.restored.length) opts.onNotice?.(`Removed a bug that a killed run left in ${named(recovery.restored)}.`);
+  if (recovery.kept.length) opts.onNotice?.(`A killed run was recorded for ${named(recovery.kept)}, but these files changed after it. They were left alone. Check them.`);
+  if (recovery.corrupt) opts.onNotice?.("The record of a killed run is damaged, so it was deleted. If a file has a planted bug in it, use git to restore it.");
+
+  if (!inPlace) {
+    const outside = opts.files.filter((f) => path.relative(cwd, f).startsWith(".."));
+    if (outside.length) throw new ProveError(`These files are outside the current directory: ${outside.join(", ")}. Run canfail from the project root, or use --in-place.`);
+  }
 
   const originals = new Map(opts.files.map((f) => [f, readFileSync(f, "utf8")]));
-  const candidates = opts.files.flatMap((f) => findMutants(f, originals.get(f)!));
-  if (candidates.length === 0) throw new ProveError("No place to plant a bug in these files.");
+  const found = opts.files.flatMap((f) => findMutants(f, originals.get(f)!));
+  if (found.length === 0) throw new ProveError("No place to plant a bug in these files.");
+  const candidates = opts.lines ? found.filter((m) => opts.lines!.get(m.file)?.has(m.line)) : found;
+  if (candidates.length === 0) throw new NothingToProve("The changed lines have no place to plant a bug.");
 
-  const base = await runCommand(cmd, cwd, opts.timeoutMs ?? 0);
-  if (base.code !== 0) {
-    throw new ProveError(`The tests fail before any bug is planted (exit ${base.code}). Fix them first.`, base.output);
-  }
-  const baseline: Baseline = { durationMs: base.durationMs, passed: countPassed(base.output) };
-  opts.onBaseline?.(baseline);
-
-  const mutants = pickMutants(candidates, opts.bugs, opts.seed);
-  const timeoutMs = opts.timeoutMs ?? defaultTimeout(base.durationMs);
-
+  const jobs = inPlace ? 1 : Math.max(1, opts.jobs ?? 1);
+  const roots: string[] = [];
   const journal = journalPath(cwd);
-  mkdirSync(path.dirname(journal), { recursive: true });
-  writeFileSync(journal, JSON.stringify(Object.fromEntries(originals)));
+  const locate = (root: string, file: string) => (inPlace ? file : path.join(root, path.relative(cwd, file)));
+  const originalsJournal = Object.fromEntries(originals);
 
   const putBack = () => {
-    for (const [file, text] of originals) {
-      if (readFileSync(file, "utf8") !== text) writeFileSync(file, text);
+    if (inPlace) {
+      for (const [file, text] of originals) {
+        if (readFileSync(file, "utf8") !== text) writeFileSync(file, text);
+      }
+      rmSync(journal, { force: true });
+    } else {
+      for (const root of roots) rmSync(root, { recursive: true, force: true });
     }
-    rmSync(journal, { force: true });
   };
   const onSignal = (signal: NodeJS.Signals) => {
-    active?.kill();
+    for (const kill of active) kill();
     putBack();
     process.exit(signal === "SIGINT" ? 130 : 143);
   };
@@ -177,35 +302,102 @@ export async function prove(opts: ProveOptions): Promise<ProveResult> {
   process.on("SIGTERM", onSignal);
   process.on("exit", putBack);
 
-  const results: MutantResult[] = [];
+  const place = (file: string, text: string, root: string) => {
+    if (inPlace) writeJournal(journal, { originals: originalsJournal, active: { file, text } });
+    writeFileSync(locate(root, file), text);
+  };
+
   try {
-    for (const [i, m] of mutants.entries()) {
-      const original = originals.get(m.file)!;
-      writeFileSync(m.file, applyMutant(original, m));
-      const run = await runCommand(cmd.replaceAll("{file}", JSON.stringify(path.relative(cwd, m.file))), cwd, timeoutMs);
-      writeFileSync(m.file, original);
-      const status: Status = run.timedOut ? "timeout" : run.code === 0 ? "survived" : "caught";
-      const result: MutantResult = { ...m, ...mutantLines(original, m), status, durationMs: run.durationMs };
-      results.push(result);
-      opts.onResult?.(result, i, mutants.length);
+    if (inPlace) {
+      roots.push(cwd);
+      writeJournal(journal, { originals: originalsJournal });
+    } else {
+      for (let i = 0; i < jobs; i++) roots.push(makeCopy(cwd));
     }
+    const main = roots[0];
+    const quoted = (files: string[]) => files.map((f) => JSON.stringify(path.relative(cwd, f))).join(" ");
+    const forFiles = (files: string[]) => cmd.replaceAll("{file}", quoted(files));
+
+    // The clean run, twice: a test that fails at random would count as a caught bug.
+    const limit = opts.timeoutMs ?? BASELINE_LIMIT_MS;
+    const copyNote = inPlace ? "" : " The run uses a temporary copy without .git. If the tests need the real directory, use --in-place.";
+    const base = await runCommand(forFiles(opts.files), main, limit);
+    if (base.timedOut) throw new ProveError(`The tests did not finish in ${Math.round(limit / 1000)}s with no bug planted. Does the command use watch mode?`, base.output);
+    if (base.code !== 0) throw new ProveError(`The tests fail before any bug is planted (exit ${base.code}). Fix them first.${copyNote}`, base.output);
+    const baseline: Baseline = { durationMs: base.durationMs, passed: countPassed(base.output) };
+    opts.onBaseline?.(baseline);
+    const timeoutMs = opts.timeoutMs ?? defaultTimeout(base.durationMs);
+    const again = await runCommand(forFiles(opts.files), main, timeoutMs);
+    if (again.code !== 0) throw new ProveError("The tests passed once, then failed with no bug planted. Results from flaky tests can't be trusted.", again.output);
+
+    // Reach: a mutant in a file no test loads tells nothing about the assertions.
+    const unreached: string[] = [];
+    for (const file of opts.files) {
+      if (!candidates.some((m) => m.file === file)) continue;
+      place(file, withCanary(originals.get(file)!), main);
+      const run = await runCommand(forFiles([file]), main, timeoutMs);
+      place(file, originals.get(file)!, main);
+      if (!run.timedOut && run.code === 0) unreached.push(file);
+    }
+    const reachable = candidates.filter((m) => !unreached.includes(m.file));
+    if (reachable.length === 0) {
+      throw new ProveError(`The tests pass with an error thrown at the top of ${named(unreached)}. No test loads the code. Check the test command.`);
+    }
+
+    const mutants = pickMutants(reachable, opts.bugs, opts.seed);
+    const results: MutantResult[] = new Array(mutants.length);
+    let next = 0;
+    let done = 0;
+    const worker = async (root: string) => {
+      for (let i = next++; i < mutants.length; i = next++) {
+        const m = mutants[i];
+        const original = originals.get(m.file)!;
+        const shared = { ...m, ...mutantLines(original, m), hint: mutantHint(m) };
+        let result: MutantResult;
+        if (opts.uncovered?.get(m.file)?.has(m.line)) {
+          result = { ...shared, status: "uncovered", durationMs: 0 };
+        } else {
+          place(m.file, applyMutant(original, m), root);
+          const run = await runCommand(forFiles([m.file]), root, timeoutMs);
+          place(m.file, original, root);
+          result = { ...shared, status: statusOf(run, baseline), durationMs: run.durationMs };
+        }
+        results[i] = result;
+        opts.onResult?.(result, done++, mutants.length);
+      }
+    };
+    await Promise.all(roots.map(worker));
+
+    // The clean run once more: if it fails now, every "caught" above is in doubt.
+    const last = await runCommand(forFiles(opts.files), main, timeoutMs);
+    if (last.code !== 0) throw new ProveError("The tests fail with no bug planted after the run. The environment or a flaky test changed the results, so they can't be trusted.", last.output);
+
+    const count = (s: Status) => results.filter((r) => r.status === s).length;
+    const timedOut = count("timeout");
+    const caught = count("caught") + timedOut;
+    const survived = count("survived");
+    const crashed = count("crashed");
+    const uncovered = count("uncovered");
+    const measured = caught + survived + uncovered;
+    if (measured === 0) throw new ProveError(`All ${crashed} runs failed without a test failure, as with a compile error. Nothing was measured. Use a runtime-only test command.`);
+    return {
+      cmd,
+      files: opts.files,
+      baseline,
+      candidates: candidates.length,
+      results,
+      unreached,
+      caught,
+      survived,
+      timedOut,
+      crashed,
+      uncovered,
+      score: Math.round((caught / measured) * 100),
+    };
   } finally {
     putBack();
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
     process.off("exit", putBack);
   }
-
-  const survived = results.filter((r) => r.status === "survived").length;
-  const caught = results.length - survived;
-  return {
-    cmd,
-    files: opts.files,
-    baseline,
-    candidates: candidates.length,
-    results,
-    caught,
-    survived,
-    score: results.length === 0 ? 100 : Math.round((caught / results.length) * 100),
-  };
 }

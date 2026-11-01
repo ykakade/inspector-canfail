@@ -12,7 +12,13 @@ export type Operator =
   | "string"
   | "remove-call"
   | "method"
-  | "update";
+  | "update"
+  | "nullish"
+  | "optional-chain"
+  | "await"
+  | "return-value"
+  | "remove-throw"
+  | "remove-filter";
 
 /** One planted bug: replace `start..end` of `file` with `replacement`. */
 export interface Mutant {
@@ -44,6 +50,7 @@ const SWAP: Partial<Record<ts.SyntaxKind, [string, Operator]>> = {
   [ts.SyntaxKind.MinusEqualsToken]: ["+=", "arithmetic"],
   [ts.SyntaxKind.AmpersandAmpersandToken]: ["||", "logical"],
   [ts.SyntaxKind.BarBarToken]: ["&&", "logical"],
+  [ts.SyntaxKind.QuestionQuestionToken]: ["&&", "nullish"],
 };
 
 // A Map, not an object: `x.toString()` must not find Object.prototype.toString.
@@ -119,6 +126,19 @@ export function findMutants(file: string, text: string): Mutant[] {
     } else if (ts.isPropertyAccessExpression(node) && ts.isCallExpression(node.parent) && node.parent.expression === node) {
       const swap = METHOD_SWAP.get(node.name.text);
       if (swap) add(node.name.getStart(sf), node.name.end, swap, "method");
+      // `xs.filter(f)` becomes `xs`: the filter is gone, the types still line up.
+      else if (node.name.text === "filter" && !node.questionDotToken) add(node.parent.getStart(sf), node.parent.end, node.expression.getText(sf), "remove-filter");
+    } else if (ts.isAwaitExpression(node)) {
+      add(node.getStart(sf), node.expression.getStart(sf), "", "await");
+    } else if (ts.isReturnStatement(node) && node.expression) {
+      add(node.expression.getStart(sf), node.expression.end, "undefined", "return-value");
+    } else if (ts.isThrowStatement(node)) {
+      add(node.getStart(sf), node.end, ";", "remove-throw");
+    }
+    if ((ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) || ts.isCallExpression(node)) && node.questionDotToken) {
+      const token = node.questionDotToken;
+      const dotKeeps = ts.isPropertyAccessExpression(node);
+      add(token.getStart(sf), token.end, dotKeeps ? "." : "", "optional-chain");
     }
 
     ts.forEachChild(node, visit);
@@ -141,6 +161,31 @@ export function mutantLines(text: string, m: Mutant): { before: string; after: s
   // Multi-line statements: show the first line only.
   const shown = after.split("\n")[0].trim();
   return { before: before.split("\n")[0].trim(), after: shown === ";" || shown === "" ? "(call deleted)" : shown };
+}
+
+/** What a test must check to catch this bug. Agents read this in the JSON output. */
+export function mutantHint(m: Mutant): string {
+  const hints: Record<Operator, string> = {
+    equality: "Check one input where the two sides are equal and one where they differ.",
+    boundary: "Check the exact boundary value and the value just past it.",
+    arithmetic: "Assert an exact computed value, worked out from the requirement.",
+    logical: "Check an input where only one of the two conditions is true.",
+    negation: "Check both outcomes of this condition.",
+    condition: "Check both outcomes of this condition.",
+    boolean: "Assert the exact boolean or the behavior it controls.",
+    number: "Assert a result that depends on this exact constant.",
+    string: "Assert the exact text.",
+    "remove-call": "Assert the effect of this call: a state change or a call to a boundary.",
+    method: "Use an input where the two methods give different results.",
+    update: "Assert the value after this update, not only that the code ran.",
+    nullish: "Check this expression with null or undefined, and with a real value.",
+    "optional-chain": "Check this expression with a null or undefined value.",
+    await: "Assert the awaited result, or the order of the async work.",
+    "return-value": "Assert the exact return value.",
+    "remove-throw": "Assert that this input throws: expect(() => f()).toThrow().",
+    "remove-filter": "Use an input with items the filter must remove.",
+  };
+  return hints[m.operator];
 }
 
 /**

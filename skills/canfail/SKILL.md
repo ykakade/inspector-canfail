@@ -41,10 +41,12 @@ node <skill>/scripts/canfail.cjs prove src/cart.ts --cmd "npm test"
 
 Use paths and a non-watch test command appropriate to the project. With no paths, `scan` prefers uncommitted tests, then all discovered tests. `prove` prefers uncommitted source reachable through relative imports from tests, then source directly imported by tests. Pass explicit paths when checking a committed branch or a project with import aliases.
 
-- **scan** flags 12 ineffective testing patterns without executing tests. Review errors and warnings in context. Run `rules` for suggestions or read [the examples](references/fake-tests.md). A clean scan does not establish that a test is useful.
+- **scan** flags 16 ineffective testing patterns without executing tests. Review errors and warnings in context. Run `rules` for suggestions or read [the examples](references/fake-tests.md). A clean scan does not establish that a test is useful.
 - **prove** changes one boundary, constant, operator, or call at a time, then runs the test command. The baseline must pass. It samples up to 10 mutations by default; use `--bugs all` for all available candidates. `--json` provides structured results.
 
-`prove` temporarily edits source. It journals the original text and restores it after each mutation, on completion, Ctrl-C, and SIGTERM. Do not edit those files or run another `prove` in the same checkout during the run. After a forced kill, run `restore` from the same project directory.
+`prove` works in a temporary copy of the project, so you can keep working during a run and your files never change. If the tests need the real directory, use `--in-place`; then do not edit those files during the run, and after a forced kill run `restore` from the same project directory. `restore` only removes a planted bug. It never overwrites later work.
+
+For a branch, `--since main` checks only the lines changed since `main`. This is usually the check you want, and it is much faster. `--jobs 4` runs four copies at the same time. `--json` gives a `hint` for each mutation that says what a test must check.
 
 ## Review survivors
 
@@ -56,12 +58,12 @@ For each mutation that survives, inspect the before/after line and ask whether i
 
 Rerun after fixing real gaps. The same source and `--seed` reproduce a sample; changing source can change the sample. A high score is supporting evidence, not the objective.
 
-A mutation counts as caught whenever the test command fails or times out. That includes type errors and unrelated failures. Check suspicious catches and use a stable runtime test command when measuring assertion quality.
+A run where the command fails but no test failed, such as a compile error, is reported as `crashed` and is not in the score. With a test runner canfail can't read, any failure counts as caught. A timeout counts as caught, so check suspicious catches. `prove` stops with exit code 2 when the tests are flaky, and reports a file that no test loads instead of asking for more tests.
 
 ## Report what you checked
 
 Include the test command and result, scan errors and warnings, mutations caught and survived, and any limits. For example:
 
-> Tests: 19 passed. Scan: 0 errors, 0 warnings. Prove: 10 of 10 sampled mutations caught. Only the checkout module was checked.
+> Tests: 20 passed. Scan: 0 errors, 0 warnings. Prove: 10 of 10 sampled mutations caught. Only the checkout module was checked.
 
 If mutations survived, say which behavior is unprotected or why a mutation is harmless. If you reused existing tests or added none, say what already covers the change. Don't add tests just to have something to report.

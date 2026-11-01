@@ -80,6 +80,14 @@ export function formatResult(r: MutantResult, cwd: string): string {
       `               ${c.green(`+ ${r.after}`)}`,
     ].join("\n");
   }
+  if (r.status === "uncovered") {
+    return [
+      `  ${c.red("✗")} ${c.redBold("uncovered")}  ${where}  ${c.dim(`${r.operator}: the coverage report says no test runs this line`)}`,
+    ].join("\n");
+  }
+  if (r.status === "crashed") {
+    return `  ${c.yellow("!")} ${c.yellow("crashed")}    ${where}  ${c.dim(`${r.operator}: ${change(r)} (no test failed, not in the score)`)}`;
+  }
   const label = r.status === "timeout" ? "caught (timeout)" : "caught";
   return `  ${c.green("✓")} ${c.green(label.padEnd(8))}   ${where}  ${c.dim(`${r.operator}: ${change(r)}`)}`;
 }
@@ -94,19 +102,24 @@ const clip = (s: string, max = 40) => {
   return one.length > max ? `${one.slice(0, max - 1)}…` : one;
 };
 
-export function formatProveSummary(result: ProveResult): string {
-  const { caught, results, baseline } = result;
-  const total = results.length;
+export function formatProveSummary(result: ProveResult, cwd = process.cwd()): string {
+  const { caught, crashed, uncovered, timedOut, survived, unreached, baseline } = result;
+  const total = caught + survived + uncovered;
   const who = baseline.passed === null ? "Your tests" : `Your ${baseline.passed} passing tests`;
   const line = `${who} caught ${caught} of ${plural(total, "planted bug")}.`;
   const score = `Score: ${result.score}%`;
-  if (caught === total) {
-    return `\n  ${c.greenBold("✓")} ${c.bold(line)} ${c.dim(score)}\n`;
-  }
+  const notes = [
+    timedOut > 0 && `${timedOut} of the caught ${timedOut === 1 ? "bug is a timeout" : "bugs are timeouts"}, not a failed test.`,
+    crashed > 0 && `${crashed} more ${crashed === 1 ? "run" : "runs"} failed with no failed test, as with a compile error. Not in the score.`,
+    uncovered > 0 && `${uncovered} planted ${uncovered === 1 ? "bug is" : "bugs are"} on lines with no test coverage.`,
+    unreached.length > 0 && `No test loads ${unreached.map((f) => rel(cwd, f)).join(", ")}. Not in the score.`,
+  ].filter((n): n is string => !!n);
+  const ok = caught === total && unreached.length === 0;
   return [
     "",
-    `  ${c.redBold("✖")} ${c.bold(line)} ${c.dim(score)}`,
-    `    ${c.dim("For each survived bug, write a test that fails on it. Then run canfail again.")}`,
+    `  ${ok ? c.greenBold("✓") : c.redBold("✖")} ${c.bold(line)} ${c.dim(score)}`,
+    ...notes.map((n) => `    ${c.yellow(n)}`),
+    ...(survived + uncovered > 0 ? [`    ${c.dim("For each survivor, check if it changes required behavior. If it does, add a test that fails on it.")}`] : []),
     "",
   ].join("\n");
 }

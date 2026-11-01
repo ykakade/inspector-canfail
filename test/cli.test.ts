@@ -1,6 +1,6 @@
 // End-to-end: runs the bundled CLI the way users and agents run it.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildSync } from "esbuild";
@@ -47,16 +47,16 @@ describe("the numbers in the README", () => {
     expect(readFileSync(path.join(ROOT, SOURCE), "utf8")).toBe(original);
   });
 
-  demo("prove: the honest suite's 19 tests catch 10 of 10 bugs", () => {
+  demo("prove: the honest suite's 20 tests catch 10 of 10 bugs", () => {
     const { code, out } = canfail(["prove", SOURCE, "--cmd", AFTER]);
     expect(code).toBe(0);
-    expect(out).toContain("Your 19 passing tests caught 10 of 10 planted bugs.");
+    expect(out).toContain("Your 20 passing tests caught 10 of 10 planted bugs.");
   });
 
   it("scan: the honest suite has no findings", () => {
     const { code, out } = canfail(["scan", "examples/checkout/tests/after"]);
     expect(code).toBe(0);
-    expect(out).toContain("No fake tests found in 16 tests.");
+    expect(out).toContain("No fake tests found in 17 tests.");
   });
 });
 
@@ -78,7 +78,7 @@ describe("cli", () => {
   it("lists every rule", () => {
     const { code, out } = canfail(["rules"]);
     expect(code).toBe(0);
-    expect(out.match(/^\s+(error|warn)\s+\S+$/gm)).toHaveLength(12);
+    expect(out.match(/^\s+(error|warn)\s+\S+$/gm)).toHaveLength(16);
   });
 });
 
@@ -96,6 +96,124 @@ describe("hook", () => {
     expect(canfail(["hook"], { input: event("examples/checkout/tests/after/checkout.test.ts") })).toMatchObject({ code: 0, err: "" });
     expect(canfail(["hook"], { input: event(SOURCE) })).toMatchObject({ code: 0, err: "" });
     expect(canfail(["hook"], { input: "not json" })).toMatchObject({ code: 0, err: "" });
+  });
+});
+
+describe("bad input stops the run", () => {
+  const project = () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "canfail-bad-"));
+    writeFileSync(path.join(dir, "f.js"), "exports.f = (a) => a + 1;\n");
+    return dir;
+  };
+
+  it("exits 2 when a scan finds no test files, because 0 files is not a pass", () => {
+    const dir = project();
+    expect(canfail(["scan", "f.js"], { cwd: dir }).code).toBe(0); // a named file counts as a test file
+    mkdirSync(path.join(dir, "lib"));
+    writeFileSync(path.join(dir, "lib/a.js"), "exports.a = 1;\n");
+    const { code, err } = canfail(["scan", "lib"], { cwd: dir });
+    expect(code).toBe(2);
+    expect(err).toContain("No test files in: lib");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("finds a test in a test folder without .test in its name", () => {
+    const dir = project();
+    mkdirSync(path.join(dir, "test"));
+    writeFileSync(path.join(dir, "test/cart.js"), `it("x", () => {});\n`);
+    const { code, out } = canfail(["scan", "test"], { cwd: dir });
+    expect(code).toBe(1);
+    expect(out).toContain("no-assertion");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it.each([
+    [["--timeout", "abc"], "--timeout"],
+    [["--seed", "abc"], "--seed"],
+    [["--jobs", "0"], "--jobs"],
+    [["--jobs", "2", "--in-place"], "--jobs"],
+  ])("rejects %j", (args, name) => {
+    const dir = project();
+    const { code, err } = canfail(["prove", "f.js", "--cmd", "true", ...args], { cwd: dir });
+    expect(code).toBe(2);
+    expect(err).toContain(name);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("the stop hook", () => {
+  const repo = () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "canfail-stop-"));
+    spawnSync("git", ["init", "-q"], { cwd: dir });
+    return dir;
+  };
+
+  it("blocks once when a changed test can't fail, then lets the agent stop", () => {
+    const dir = repo();
+    writeFileSync(path.join(dir, "a.test.js"), `it("x", () => { expect(1).toBe(1); });\n`);
+    const first = canfail(["stop-hook"], { input: JSON.stringify({ cwd: dir }) });
+    expect(first.code).toBe(2);
+    expect(first.err).toContain("[tautology]");
+    expect(canfail(["stop-hook"], { input: JSON.stringify({ cwd: dir, stop_hook_active: true }) }).code).toBe(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("stays quiet when the changed tests are fine", () => {
+    const dir = repo();
+    writeFileSync(path.join(dir, "a.test.js"), `it("x", () => { expect(f(1)).toBe(2); });\n`);
+    expect(canfail(["stop-hook"], { input: JSON.stringify({ cwd: dir }) }).code).toBe(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("--since", () => {
+  const git = (dir: string, ...args: string[]) => spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: dir, encoding: "utf8" });
+
+  it("plants bugs only on changed lines", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "canfail-since-"));
+    git(dir, "init", "-q", "-b", "main");
+    writeFileSync(path.join(dir, "f.js"), "exports.a = (x) => x + 1;\nexports.b = (x) => x * 2;\n");
+    writeFileSync(path.join(dir, "f.test.js"), `const { a, b } = require("./f.js"); if (a(1) !== 2) process.exit(1);\nb(1);\n`);
+    git(dir, "add", "-A");
+    git(dir, "commit", "-qm", "one");
+    git(dir, "checkout", "-qb", "work");
+    writeFileSync(path.join(dir, "f.js"), "exports.a = (x) => x + 1;\nexports.b = (x) => x * 3;\n");
+    const { out } = canfail(["prove", "--since", "main", "--bugs", "all", "--cmd", "node f.test.js", "--json"], { cwd: dir });
+    const lines = new Set(JSON.parse(out).prove.results.map((r: { line: number }) => r.line));
+    expect([...lines]).toEqual([2]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("exits 0 when the diff has no source to prove", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "canfail-since-"));
+    git(dir, "init", "-q", "-b", "main");
+    writeFileSync(path.join(dir, "README.md"), "x\n");
+    git(dir, "add", "-A");
+    git(dir, "commit", "-qm", "one");
+    const { code, out } = canfail(["prove", "--since", "main", "--cmd", "true"], { cwd: dir });
+    expect(code).toBe(0);
+    expect(out).toContain("Nothing to prove");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("explains a ref it can't read", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "canfail-since-"));
+    git(dir, "init", "-q");
+    const { code, err } = canfail(["prove", "--since", "nope", "--cmd", "true"], { cwd: dir });
+    expect(code).toBe(2);
+    expect(err).toContain('Can\'t compare with "nope"');
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("demo", () => {
+  demo("needs no project and shows the gap", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "canfail-empty-"));
+    const { code, out } = canfail(["demo"], { cwd: dir });
+    expect(code).toBe(0);
+    expect(out).toContain("caught 0 of");
+    expect(out).toMatch(/caught (\d+) of \1 planted/);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 
@@ -117,7 +235,7 @@ describe("a killed run never leaves a bug behind", () => {
   }
 
   async function startAndWaitForBug(dir: string) {
-    const child = spawn("node", [CLI, "prove", "f.js", "--cmd", "node hang.js", "--timeout", "30000"], { cwd: dir });
+    const child = spawn("node", [CLI, "prove", "f.js", "--in-place", "--cmd", "node hang.js", "--timeout", "30000"], { cwd: dir });
     for (let i = 0; i < 200 && !existsSync(path.join(dir, "planted")); i++) await new Promise((r) => setTimeout(r, 25));
     expect(existsSync(path.join(dir, "planted"))).toBe(true);
     return child;

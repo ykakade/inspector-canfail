@@ -24,6 +24,23 @@ jobs:
       # The committed bundle must match src/.
       - run: npm run check:bundle
 
+  other-systems:
+    # The Windows and macOS paths have not been proven yet, so a failure here does not block a merge.
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
   bundle-on-node-18:
     # The bundle is the product. It must run on the oldest Node we support.
     runs-on: ubuntu-latest
@@ -34,3 +51,4 @@ jobs:
           node-version: 18
       - run: node skills/canfail/scripts/canfail.cjs --version
       - run: node skills/canfail/scripts/canfail.cjs scan examples/checkout/tests/after
+      - run: node skills/canfail/scripts/canfail.cjs demo

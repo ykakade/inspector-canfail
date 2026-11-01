@@ -49,9 +49,20 @@ describe("findMutants", () => {
       `interface I { k: "v" }`,
       `console.log("debug", 1 + 2);`,
       `const o = { "key": v };`,
-      `throw new Error("bad input");`,
     ].join("\n");
     expect(mutate(code)).toEqual([]);
+    // The message stays, but the throw itself is a bug to plant.
+    expect(mutate(`throw new Error("bad input");`)).toEqual(["remove-throw: ;"]);
+  });
+
+  it("plants the bugs agents leave behind in new code", () => {
+    expect(mutate("v = a ?? b;")).toEqual(["nullish: v = a && b;"]);
+    expect(mutate("v = a?.b;")).toEqual(["optional-chain: v = a.b;"]);
+    expect(mutate("v = a?.[0];")).toEqual(["optional-chain: v = a[0];", "number: v = a?.[1];"]);
+    expect(mutate("v = await f;")).toEqual(["await: v = f;"]);
+    expect(mutate("function f() { return x; }")).toEqual(["return-value: function f() { return undefined; }"]);
+    expect(mutate("v = xs.filter(f);")).toEqual(["remove-filter: v = xs;"]);
+    expect(mutate("function f() { return; }")).toEqual([]);
   });
 
   it("leaves enums, namespaces and declare blocks alone", () => {
@@ -64,7 +75,10 @@ describe("findMutants", () => {
   });
 
   it("leaves property names and index keys alone", () => {
-    expect(mutate(`class A { "p" = 1; "m"() { return o["k"]; } }`)).toEqual([`number: class A { "p" = 2; "m"() { return o["k"]; } }`]);
+    expect(mutate(`class A { "p" = 1; "m"() { return o["k"]; } }`)).toEqual([
+      `number: class A { "p" = 2; "m"() { return o["k"]; } }`,
+      `return-value: class A { "p" = 1; "m"() { return undefined; } }`,
+    ]);
   });
 
   it("ignores methods that only exist on Object.prototype", () => {

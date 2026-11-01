@@ -403,3 +403,169 @@ describe("cart", () => {
     expect(report.tests).toBe(1);
   });
 });
+
+describe("does not flag working tests", () => {
+  it("Playwright hooks and options are not tests, and test.describe is a suite", () => {
+    const report = scanSource("a.spec.ts", `
+      test.beforeEach(async ({ page }) => { await page.goto("/"); });
+      test.afterAll(() => { cleanup(); });
+      test.use({ viewport: null });
+      test.describe("group", () => {
+        test("real", async ({ page }) => { await expect(page).toHaveTitle("x"); });
+        test("fake", async () => {});
+      });`);
+    expect(report.tests).toBe(2);
+    expect(report.findings.map((f) => [f.rule, f.test])).toEqual([["no-assertion", "fake"]]);
+  });
+
+  it.each(["expect(f()).true;", "expect(f()).false;", "expect(f()).not.undefined;", "expect(f()).is.false;", "expect(f()).to.be.true;", "expect(xs).not.empty;"])(
+    "accepts the Chai property %s",
+    (line) => {
+      expect(rules(`it("x", () => { ${line} });`)).not.toContain("dangling-expect");
+    },
+  );
+
+  it.each(["expect(channel).toBeDefined;", "expect(file.label, 'File');", "expect(xs[0].endsWith('a'));"])("still flags %s", (line) => {
+    expect(rules(`it("x", () => { ${line} });`)).toContain("dangling-expect");
+  });
+
+  it("accepts an expect() that is stored, and used later", () => {
+    expect(rules(`it("x", () => { const result = expect(run()); result.toBe(1); });`)).not.toContain("dangling-expect");
+  });
+
+  it("treats two calls as a repeatability check: a warning, not 'can't fail'", () => {
+    const [finding] = scanSource("a.test.ts", `it("x", () => { expect(get()).toBe(get()); });`).findings;
+    expect(finding).toMatchObject({ rule: "tautology", severity: "warn" });
+    expect(finding.message).toContain("repeatability");
+  });
+
+  it("accepts .not with two calls: each call must give a new object", () => {
+    expect(rules(`it("x", () => { expect(make()).not.toBe(make()); });`)).toEqual([]);
+  });
+
+  it("still flags a value compared with itself", () => {
+    const [finding] = scanSource("a.test.ts", `it("x", () => { const a = f(); expect(a).toBe(a); });`).findings;
+    expect(finding).toMatchObject({ rule: "tautology", severity: "error" });
+  });
+
+  it("accepts assert.ok(false), a deliberate failure", () => {
+    expect(rules(`it("x", () => { f(); assert.ok(false, "must not get here"); });`)).toEqual([]);
+  });
+
+  it("a spy with no mock implementation calls the real method", () => {
+    const code = `import { vi } from "vitest"; import { store } from "./store";
+      it("x", () => { const s = vi.spyOn(store, "assign"); expect(store.assign(1)).toBe(2); expect(s).toHaveBeenCalledWith(1); });`;
+    expect(rules(code)).toEqual([]);
+  });
+
+  it.each([
+    `vi.spyOn(store, "assign").mockReturnValue(2);`,
+    `const s = vi.spyOn(store, "assign"); s.mockReturnValue(2);`,
+  ])("a spy that replaces the method is a mock: %s", (setup) => {
+    const code = `import { vi } from "vitest"; import { store } from "./store";
+      it("x", () => { ${setup} expect(store.assign(1)).toBe(2); });`;
+    expect(rules(code)).toContain("tests-the-mock");
+  });
+
+  it("follows helpers in the same file, also through other helpers", () => {
+    const code = `const check = (a) => { expect(f(a)).toBe(1); };
+      function roundTrip(a) { check(a); }
+      it("x", () => { roundTrip(1); });`;
+    expect(rules(code)).toEqual([]);
+  });
+});
+
+describe("finds more tests that can't fail", () => {
+  it.each(["it.only", "test.only", "fit"])("%s hides the other tests", (name) => {
+    expect(rules(`${name}("x", () => { expect(f()).toBe(1); });`)).toEqual(["focused-test"]);
+  });
+
+  it("flags describe.only and still checks the tests inside", () => {
+    expect(rules(`describe.only("s", () => { it("x", () => {}); });`).sort()).toEqual(["focused-test", "no-assertion"]);
+  });
+
+  it.each(["it.skipIf(true)", "it.runIf(false)"])("%s never runs", (name) => {
+    expect(rules(`${name}("x", () => { expect(f()).toBe(1); });`)).toEqual(["never-runs"]);
+  });
+
+  it("accepts a real condition: a platform check is fine", () => {
+    expect(rules(`it.skipIf(process.platform === "win32")("x", () => { expect(f()).toBe(1); });`)).toEqual([]);
+  });
+
+  it("warns about it.fails", () => {
+    expect(rules(`it.fails("x", () => { expect(f()).toBe(1); });`)).toEqual(["inverted-test"]);
+  });
+
+  it("warns about a return before every assertion", () => {
+    expect(rules(`it("x", () => { const r = f(); if (r) return; expect(r).toBe(1); });`)).toEqual(["conditional-assertion"]);
+    expect(rules(`it("x", () => { const r = f(); expect(r).toBe(1); if (r) return; expect(r).toBe(2); });`)).toEqual([]);
+  });
+
+  it.each([`for (const x of []) expect(f(x)).toBe(1);`, `[].forEach((x) => expect(f(x)).toBe(1));`])("flags a loop over nothing: %s", (body) => {
+    expect(rules(`it("x", () => { ${body} });`)).toEqual(["never-runs"]);
+  });
+
+  it("accepts a loop over real cases", () => {
+    expect(rules(`it("x", () => { for (const x of [1, 2]) expect(f(x)).toBe(x); });`)).toEqual([]);
+  });
+
+  it.each(["toEqual(expect.any(Number))", "toEqual(expect.anything())", "toBeGreaterThanOrEqual(0)", "not.toBe(null)", "not.toEqual(undefined)"])("warns about expect(f()).%s", (m) => {
+    expect(rules(`it("x", () => { expect(f()).${m}; });`)).toEqual(["weak-assertion"]);
+  });
+
+  it("accepts an exact number, and a real exclusion", () => {
+    expect(rules(`it("x", () => { expect(f()).toBeGreaterThanOrEqual(5); expect(g()).not.toBe(3); });`)).toEqual([]);
+  });
+
+  it("warns when a snapshot is the only check", () => {
+    expect(rules(`it("x", () => { expect(f()).toMatchSnapshot(); });`)).toEqual(["snapshot-only"]);
+    expect(rules(`it("x", () => { expect(f()).toMatchSnapshot(); expect(g()).toBe(1); });`)).toEqual([]);
+  });
+
+  it("does not accept a helper because of its name when its body checks nothing", () => {
+    expect(rules(`function assertNothing() {} it("x", () => { assertNothing(); });`)).toEqual(["no-assertion"]);
+  });
+
+  it("flags a stored .resolves that nothing awaits", () => {
+    expect(rules(`it("x", () => { const p = expect(q).resolves.toBe(2); });`)).toEqual(["floating-assertion"]);
+    expect(rules(`it("x", async () => { const p = expect(q).resolves.toBe(2); await p; });`)).toEqual([]);
+  });
+});
+
+describe("the new rules leave working tests alone", () => {
+  it("a variable named fit is not a focused test", () => {
+    const report = scanSource("a.test.ts", `const fit = vi.fn(); it("x", () => { fit.mockClear(); expect(f(fit)).toBe(1); });`);
+    expect(report.findings).toEqual([]);
+  });
+
+  it.each([`test.skip(!RUN, "needs a server");`, `test.skip();`, `test.skip(process.platform === "win32");`])("a run-time skip is not a skipped test: %s", (line) => {
+    const report = scanSource("a.spec.ts", `test.beforeAll(() => { ${line} }); test("x", async () => { expect(await f()).toBe(1); });`);
+    expect(report.findings).toEqual([]);
+  });
+
+  it("still warns about a named skipped test", () => {
+    expect(rules(`test.skip("named", async () => { expect(await f()).toBe(1); });`)).toEqual(["skipped-test"]);
+  });
+
+  it("a return after a visible skip hides nothing", () => {
+    expect(rules(`test("x", async () => { if (!repo) { test.skip(true, "no repo"); return; } expect(await f()).toBe(1); });`)).toEqual([]);
+  });
+
+  it("a bare fit() call is not a focused test", () => {
+    expect(rules(`function fit() {} it("x", () => { fit(); expect(f()).toBe(1); });`)).toEqual([]);
+  });
+
+  it("a try around a local helper may be the test: it does not swallow an assertion", () => {
+    const code = `function must(a) { if (!a) throw new Error("no"); }
+      it("x", () => { let caught; try { must(0); } catch (e) { caught = e; } expect(caught.message).toBe("no"); });`;
+    expect(rules(code)).toEqual([]);
+  });
+
+  it("a local helper that throws is a check", () => {
+    expect(rules(`function must(a) { if (!a) throw new Error("no"); } it("x", () => { must(f()); });`)).toEqual([]);
+  });
+
+  it("a local helper with an assertion name and a body keeps the trust that its name gives", () => {
+    expect(rules(`async function assertExits(run) { await run(); } it("x", () => assertExits(f));`)).toEqual([]);
+  });
+});

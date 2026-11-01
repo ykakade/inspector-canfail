@@ -161,6 +161,41 @@ if (t > 100) {
 
 When the condition is false, nothing is checked. Fix: assert the condition, then the value.
 
+When a `return` comes before every assertion, the rule gives the same warning.
+
+### focused-test
+
+```ts
+it.only("adds tax", () => { expect(addTax(100)).toBe(108); });
+```
+
+The runner skips every other test, and the run stays green. Fix: remove `.only`.
+
+### never-runs
+
+```ts
+it.skipIf(true)("adds tax", () => { expect(addTax(100)).toBe(108); });
+it("adds tax", () => { for (const x of []) expect(addTax(x)).toBe(108); });
+```
+
+The condition is a constant, or the list is empty. Fix: remove the constant condition, or loop over real cases. A real condition, such as a platform check, is not flagged.
+
+### inverted-test
+
+```ts
+it.fails("adds tax", () => { expect(addTax(100)).toBe(108); });
+```
+
+The test passes only when the assertion fails, so a green run says nothing about the behavior. Fix: correct the code and assert the behavior, or tell the user about the known failure.
+
+### snapshot-only
+
+```ts
+it("adds tax", () => { expect(addTax(100)).toMatchSnapshot(); });
+```
+
+The first run saves the current output, even when that output is wrong. Fix: assert the values from the requirement.
+
 ## Silence one finding
 
 Some findings are on purpose. Add a comment on the line, or the line above, with the rule and the reason:
